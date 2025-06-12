@@ -1,0 +1,27 @@
+# Core dependencies
+pandas==2.0.3
+numpy==1.24.3
+yfinance==0.2.18
+anthropic==0.26.0
+python-dotenv==1.0.0
+
+# Scheduling and utilities
+schedule==1.2.0
+pytz==2023.3
+
+# Testing
+pytest==7.4.0
+pytest-cov==4.1.0
+pytest-mock==3.11.1
+
+# Logging and monitoring
+colorlog==6.7.0
+
+# Database
+sqlalchemy==2.0.23
+
+# Future additions (commented out for now)
+# ta-lib==0.4.28  # Requires separate installation
+# pandas-ta==0.3.14b
+# vectorbt==0.26.0  # For backtesting
+# streamlit==1.25.0  # For web dashboard
