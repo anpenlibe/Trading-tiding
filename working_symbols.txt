@@ -1,0 +1,13 @@
+# Working Yahoo Finance symbols for NSE stocks
+# Tested on: 2025-06-12 13:17:54.066958
+
+RELIANCE.NS
+RELIANCE.BO
+TCS.NS
+INFY.NS
+HDFCBANK.NS
+ICICIBANK.NS
+SBIN.NS
+ITC.NS
+^NSEI
+^NSEBANK

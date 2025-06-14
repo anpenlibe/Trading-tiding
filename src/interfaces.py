@@ -1,0 +1,133 @@
+"""
+Module: interfaces.py
+Purpose: Abstract base classes for standardized interfaces
+Author: Trading Bot Developer
+Created: 2025-06-13
+Modified: 2025-06-13
+"""
+
+from abc import ABC, abstractmethod
+from typing import Optional, Dict, Any, List
+from datetime import datetime
+from dataclasses import dataclass
+import pandas as pd
+
+
+@dataclass
+class MarketData:
+    """Standard market data structure"""
+    symbol: str
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    source: str = "unknown"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization"""
+        return {
+            'symbol': self.symbol,
+            'timestamp': self.timestamp.isoformat(),
+            'open': self.open,
+            'high': self.high,
+            'low': self.low,
+            'close': self.close,
+            'volume': self.volume,
+            'source': self.source
+        }
+
+
+class BaseMarketDataAPI(ABC):
+    """Abstract base class for all market data sources"""
+    
+    @abstractmethod
+    def __init__(self, **kwargs):
+        """Initialize with necessary credentials"""
+        pass
+    
+    @abstractmethod
+    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
+        """
+        Fetch OHLC data for a symbol.
+        
+        Args:
+            symbol: Stock symbol (without exchange suffix)
+            
+        Returns:
+            MarketData object or None if failed
+        """
+        pass
+    
+    @abstractmethod
+    def is_available(self) -> bool:
+        """Check if the API is available and configured"""
+        pass
+    
+    def get_name(self) -> str:
+        """Get the name of this API source"""
+        return self.__class__.__name__
+
+
+class BaseDecisionModel(ABC):
+    """Abstract base class for trading decision models"""
+    
+    @abstractmethod
+    def analyze(self, market_data: pd.DataFrame, indicators: Dict[str, float]) -> Dict[str, Any]:
+        """
+        Analyze market data and indicators to generate trading signal.
+        
+        Args:
+            market_data: Historical price data
+            indicators: Calculated technical indicators
+            
+        Returns:
+            Dict containing:
+                - signal: BUY/SELL/HOLD
+                - confidence: 0.0 to 1.0
+                - reasoning: Explanation of decision
+                - stop_loss: Suggested stop loss price (optional)
+                - target: Suggested target price (optional)
+        """
+        pass
+    
+    @abstractmethod
+    def get_required_indicators(self) -> List[str]:
+        """Return list of indicators this model needs"""
+        pass
+
+
+class BaseRiskManager(ABC):
+    """Abstract base class for risk management"""
+    
+    @abstractmethod
+    def calculate_position_size(self, capital: float, risk_per_trade: float, 
+                              stop_loss_distance: float) -> int:
+        """Calculate appropriate position size based on risk parameters"""
+        pass
+    
+    @abstractmethod
+    def validate_trade(self, signal: Dict[str, Any], current_positions: Dict[str, Any]) -> bool:
+        """Validate if a trade should be taken based on risk rules"""
+        pass
+
+
+class BaseTradingExecutor(ABC):
+    """Abstract base class for trade execution"""
+    
+    @abstractmethod
+    def place_order(self, symbol: str, quantity: int, order_type: str, 
+                   price: Optional[float] = None) -> Dict[str, Any]:
+        """Place an order"""
+        pass
+    
+    @abstractmethod
+    def get_positions(self) -> Dict[str, Any]:
+        """Get current positions"""
+        pass
+    
+    @abstractmethod
+    def get_account_info(self) -> Dict[str, Any]:
+        """Get account information"""
+        pass
