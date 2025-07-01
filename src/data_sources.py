@@ -3,238 +3,119 @@ Module: data_sources.py
 Purpose: Concrete implementations of market data APIs using interfaces
 Author: Trading Bot Developer
 Created: 2025-06-13
-Modified: 2025-06-13
+Modified: 2025-06-30 - Fixed interface compliance
 """
 
 import os
 import time
 import requests
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 from typing import Optional, Dict, Any
 import pandas as pd
+from datetime import datetime, timezone
 
 from src.interfaces import BaseMarketDataAPI, MarketData
 from src.utils.logger import get_data_logger
 
 logger = get_data_logger()
 
+from kiteconnect import KiteConnect
+import pandas as pd
+from datetime import timezone
 
-class DhanAPI(BaseMarketDataAPI):
-    """Dhan API implementation"""
-    
-    def __init__(self, access_token: Optional[str] = None):
-        self.access_token = access_token or os.getenv('DHAN_API_KEY')
-        self.base_url = "https://api.dhan.co"
-        
-        if self.access_token:
-            self.headers = {
-                "access-token": self.access_token,
-                "Content-Type": "application/json"
-            }
-            logger.logger.info("Dhan API initialized with token")
+class ZerodhaAPI(BaseMarketDataAPI):
+    """Zerodha OHLC + Quote Data using Kite Connect"""
+
+    def __init__(self, **kwargs):  # FIXED: Now accepts **kwargs as per interface
+        self.api_key = os.getenv("ZERODHA_API_KEY")
+        self.api_secret = os.getenv("ZERODHA_API_SECRET")
+        self.access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
+
+        self.kite = None
+        if self.api_key and self.access_token:
+            self.kite = KiteConnect(api_key=self.api_key)
+            self.kite.set_access_token(self.access_token)
+            logger.logger.info("ZerodhaAPI initialized")
         else:
-            self.headers = {}
-            logger.logger.warning("Dhan API key not found")
-    
-    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch OHLC data from Dhan API"""
-        if not self.is_available():
-            return None
-            
+            logger.logger.warning("Zerodha API key or token not configured properly")
+
+        # Preload instrument token mappings
+        self.tokens = self._load_token_map()
+
+    def _load_token_map(self) -> dict:
+        """Load instrument token mappings from instruments.csv"""
         try:
-            start_time = time.time()
-            today = datetime.now().strftime('%Y-%m-%d')
+            df = pd.read_csv("instruments.csv")
+            df = df[df["exchange"] == "NSE"]
+            return dict(zip(df["tradingsymbol"], df["instrument_token"]))
+        except Exception as e:
+            logger.logger.warning(f"Failed to load instrument tokens: {e}")
+            return {}
 
-            params = {
-                "symbol": f"{symbol}-EQ",  # Dhan format: RELIANCE-EQ
-                "exchange": "NSE",         # Modify if needed for BSE
-                "interval": "5MIN",
-                "fromDate": today,
-                "toDate": today
-            }
-
-            response = requests.get(
-                f"{self.base_url}/market/intraday/candle",
-                headers=self.headers,
-                params=params,
-                timeout=10
-            )
-
-            if response.status_code != 200:
-                logger.log_api_call("dhan", symbol, False,
-                                    time.time() - start_time,
-                                    f"HTTP {response.status_code}")
+    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
+        """Fetch current OHLC + volume for the given symbol using Zerodha"""
+        try:
+            token = self.tokens.get(symbol)
+            if not token:
+                logger.logger.warning(f"Token not found for {symbol}")
                 return None
 
-             # Get the latest candle
-            latest = data["candle"][-1]
+            token_str = str(token)
+            ohlc_data = self.kite.ohlc([token])
+            quote_data = self.kite.quote([token])
 
-            market_data = MarketData(
+            if token_str not in ohlc_data or token_str not in quote_data:
+                logger.logger.error(f"Token missing in Zerodha response for {symbol}")
+                return None
+
+            ohlc = ohlc_data[token_str]["ohlc"]
+            volume = quote_data[token_str].get("volume", -1)
+
+            timestamp = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
+
+            return MarketData(
                 symbol=symbol,
-                timestamp=datetime.strptime(latest["startTime"], "%Y-%m-%d %H:%M:%S"),
-                open=float(latest["open"]),
-                high=float(latest["high"]),
-                low=float(latest["low"]),
-                close=float(latest["close"]),
-                volume=int(latest["volume"]),
-                source="dhan"
+                timestamp=timestamp,
+                open=ohlc["open"],
+                high=ohlc["high"],
+                low=ohlc["low"],
+                close=ohlc["close"],
+                volume=int(volume),
+                source="zerodha"
             )
-
-            duration = time.time() - start_time
-            logger.log_api_call("dhan", symbol, True, duration)
-
-            return market_data
 
         except Exception as e:
-        duration = time.time() - start_time
-        logger.log_api_call("dhan", symbol, False, duration, str(e))
-        return None
+            logger.logger.error(f"Zerodha fetch failed for {symbol}: {e}")
+            return None
+ 
 
     def is_available(self) -> bool:
-        """Check if Dhan API is configured"""
-        return bool(self.access_token)
+        return self.kite is not None
 
-
-class YFinanceAPI(BaseMarketDataAPI):
-    """Yahoo Finance implementation"""
-    
-    def __init__(self):
-        # yfinance doesn't need initialization
-        pass
-    
-    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch OHLC data from Yahoo Finance"""
-        try:
-            start_time = time.time()
-            
-            # Add .NS suffix for NSE stocks
-            ticker_symbol = f"{symbol}.NS"
-            ticker = yf.Ticker(ticker_symbol)
-            
-            # Get intraday data (5 minute intervals)
-            hist = ticker.history(period="1d", interval="5m")
-            
-            if hist.empty:
-                logger.log_api_call("yfinance", symbol, False, 
-                                  time.time() - start_time, "No data returned")
-                return None
-            
-            # Get the latest row
-            latest = hist.iloc[-1]
-            
-            # Create MarketData object
-            data = MarketData(
-                symbol=symbol,
-                timestamp=hist.index[-1].to_pydatetime(),
-                open=float(latest['Open']),
-                high=float(latest['High']),
-                low=float(latest['Low']),
-                close=float(latest['Close']),
-                volume=int(latest['Volume']),
-                source="yfinance"
-            )
-            
-            duration = time.time() - start_time
-            logger.log_api_call("yfinance", symbol, True, duration)
-            
-            return data
-            
-        except Exception as e:
-            duration = time.time() - start_time
-            logger.log_api_call("yfinance", symbol, False, duration, str(e))
-            return None
-    
-    def is_available(self) -> bool:
-        """yfinance is always available"""
-        return True
-
-
-class TwelveDataAPI(BaseMarketDataAPI):
-    """Twelve Data implementation"""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv('TWELVE_DATA_API_KEY')
-        self.base_url = "https://api.twelvedata.com"
-    
-    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch OHLC data from Twelve Data"""
-        if not self.is_available():
-            return None
-        
-        try:
-            start_time = time.time()
-            
-            params = {
-                "symbol": symbol,
-                "exchange": "NSE",
-                "interval": "5min",
-                "outputsize": 1,
-                "apikey": self.api_key
-            }
-            
-            response = requests.get(
-                f"{self.base_url}/time_series",
-                params=params,
-                timeout=10
-            )
-            
-            if response.status_code != 200:
-                logger.log_api_call("twelve_data", symbol, False, 
-                                  time.time() - start_time, 
-                                  f"HTTP {response.status_code}")
-                return None
-            
-            data = response.json()
-            if "values" not in data or not data["values"]:
-                logger.log_api_call("twelve_data", symbol, False, 
-                                  time.time() - start_time, 
-                                  "No values in response")
-                return None
-            
-            # Get the latest data point
-            latest = data["values"][0]
-            
-            market_data = MarketData(
-                symbol=symbol,
-                timestamp=datetime.strptime(latest["datetime"], "%Y-%m-%d %H:%M:%S"),
-                open=float(latest["open"]),
-                high=float(latest["high"]),
-                low=float(latest["low"]),
-                close=float(latest["close"]),
-                volume=int(latest["volume"]),
-                source="twelve_data"
-            )
-            
-            duration = time.time() - start_time
-            logger.log_api_call("twelve_data", symbol, True, duration)
-            
-            return market_data
-            
-        except Exception as e:
-            duration = time.time() - start_time
-            logger.log_api_call("twelve_data", symbol, False, duration, str(e))
-            return None
-    
-    def is_available(self) -> bool:
-        """Check if Twelve Data API is configured"""
-        return bool(self.api_key)
-
+    def get_name(self) -> str:
+        return "zerodha"
 
 class MockAPI(BaseMarketDataAPI):
-    """Mock API for testing"""
+    """Mock API for testing during market closed hours"""
     
-    def __init__(self):
+    def __init__(self, **kwargs):  # FIXED: Now accepts **kwargs as per interface
         self.base_prices = {
             "RELIANCE": 2850,
             "TCS": 3650,
             "INFY": 1450,
             "HDFC": 1650,
-            "ICICIBANK": 980
+            "ICICIBANK": 980,
+            "SBIN": 1100,
+            "BHARTIARTL": 950,
+            "ITC": 440,
+            "KOTAKBANK": 1750,
+            "LT": 3200
         }
     
     def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Generate mock data"""
+        """Generate mock data with realistic variations"""
         import random
         
         if symbol not in self.base_prices:
@@ -243,18 +124,25 @@ class MockAPI(BaseMarketDataAPI):
         base = self.base_prices[symbol]
         variation = base * 0.01  # 1% variation
         
+        # Generate realistic OHLC
         open_price = base + random.uniform(-variation, variation)
-        high = open_price + random.uniform(0, variation)
-        low = open_price - random.uniform(0, variation)
-        close = random.uniform(low, high)
+        
+        # Ensure high is highest and low is lowest
+        intraday_moves = [open_price]
+        for _ in range(5):  # Simulate some price movements
+            intraday_moves.append(open_price + random.uniform(-variation, variation))
+        
+        high = max(intraday_moves)
+        low = min(intraday_moves)
+        close = intraday_moves[-1]  # Last price becomes close
         
         return MarketData(
             symbol=symbol,
             timestamp=datetime.now(),
-            open=open_price,
-            high=high,
-            low=low,
-            close=close,
+            open=round(open_price, 2),
+            high=round(high, 2),
+            low=round(low, 2),
+            close=round(close, 2),
             volume=random.randint(100000, 1000000),
             source="mock"
         )
@@ -262,3 +150,6 @@ class MockAPI(BaseMarketDataAPI):
     def is_available(self) -> bool:
         """Mock is always available"""
         return True
+    
+    def get_name(self) -> str:  # FIXED: Added missing method
+        return "mock"

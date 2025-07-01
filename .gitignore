@@ -50,3 +50,6 @@ htmlcov/
 *.pickle
 backtest_results/
 live_trades/
+
+instruments.csv
+

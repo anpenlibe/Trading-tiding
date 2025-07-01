@@ -3,7 +3,12 @@ Module: config.py
 Purpose: Configuration settings for the trading bot
 Author: Trading Bot Developer
 Created: 2025-06-12
-Modified: 2025-06-12
+Modified: 2025-06-30 - UPDATED: Now uses centralized stock registry
+
+CHANGES:
+- SYMBOLS now imported from stock_registry.py
+- Added trading strategy symbol selection
+- Improved symbol management with sector awareness
 """
 
 import os
@@ -14,171 +19,275 @@ import pytz
 # Load environment variables
 load_dotenv()
 
-# API Keys
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-ZERODHA_API_KEY = os.getenv("ZERODHA_API_KEY")  # For future use
-ZERODHA_API_SECRET = os.getenv("ZERODHA_API_SECRET")  # For future use
+# API Keys - ONLY ZERODHA NOW
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
+ZERODHA_API_KEY     = os.getenv("ZERODHA_API_KEY")
+ZERODHA_API_SECRET  = os.getenv("ZERODHA_API_SECRET")
+ZERODHA_ACCESS_TOKEN= os.getenv("ZERODHA_ACCESS_TOKEN")  # Generated after login
 
 # Validate critical API keys
 if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "your-claude-api-key-here":
     raise ValueError("Please set ANTHROPIC_API_KEY in .env file")
 
-# Trading Parameters
-INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "1000.0"))
-MAX_RISK_PER_TRADE = float(os.getenv("MAX_RISK_PER_TRADE", "0.02"))  # 2%
-MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", "0.06"))  # 6%
-MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", "0.20"))  # 20%
+if not ZERODHA_API_KEY or ZERODHA_API_KEY == "your-zerodha-api-key-here":
+    print("⚠️  ZERODHA_API_KEY not configured - using mock data")
+
+# Log configured APIs
+configured_apis = []
+if ZERODHA_API_KEY and ZERODHA_API_KEY != "your-zerodha-api-key-here":
+    configured_apis.append("Zerodha")
+
+print(f"Configured APIs: {', '.join(configured_apis) if configured_apis else 'None (using mock data)'}")
+
+# Trading Parameters - UPDATED FOR ₹10,000 CAPITAL
+INITIAL_CAPITAL     = float(os.getenv("INITIAL_CAPITAL", "10000.0"))
+MAX_RISK_PER_TRADE  = float(os.getenv("MAX_RISK_PER_TRADE", "0.015"))
+MAX_DAILY_LOSS      = float(os.getenv("MAX_DAILY_LOSS", "0.05"))
+MAX_DRAWDOWN        = float(os.getenv("MAX_DRAWDOWN", "0.15"))
 
 # Position Sizing
-MIN_TRADE_VALUE = 100.0  # Minimum ₹100 per trade
-MAX_POSITION_SIZE = 0.25  # Max 25% of capital in one position
+MIN_TRADE_VALUE     = 500.0
+MAX_POSITION_SIZE = 0.20
+MAX_POSITION_SIZE_PERCENT   = 0.20
 
-# Symbols to Trade
-SYMBOLS = [
-    "RELIANCE",  # Reliance Industries
-    "TCS",       # Tata Consultancy Services
-    "INFY",      # Infosys
-    "HDFC",      # HDFC Bank
-    "ICICIBANK", # ICICI Bank
-    "SBIN",      # State Bank of India
-    "BHARTIARTL",# Bharti Airtel
-    "ITC",       # ITC Limited
-    "KOTAKBANK", # Kotak Mahindra Bank
-    "LT"         # Larsen & Toubro
-]
-
-# Alternative symbol formats for Yahoo Finance
-YAHOO_SYMBOLS = {
-    "RELIANCE": ["RELIANCE.NS", "RELIANCE.BO"],
-    "TCS": ["TCS.NS", "TCS.BO"],
-    "INFY": ["INFY.NS", "INFY.BO"],
-    "HDFC": ["HDFC.NS", "HDFC.BO"],
-    "ICICIBANK": ["ICICIBANK.NS", "ICICIBANK.BO"],
-    "SBIN": ["SBIN.NS", "SBIN.BO"],
-    "BHARTIARTL": ["BHARTIARTL.NS", "BHARTIARTL.BO"],
-    "ITC": ["ITC.NS", "ITC.BO"],
-    "KOTAKBANK": ["KOTAKBANK.NS", "KOTAKBANK.BO"],
-    "LT": ["LT.NS", "LT.BO"]
-}
+# UPDATED: Centralized Symbol Management
+# Import stock registry for intelligent symbol selection
+try:
+    from src.stock_registry import (
+        get_swing_trading_symbols, 
+        get_conservative_symbols,
+        get_diversified_symbols,
+        get_symbols_by_sector
+    )
+    
+    # Strategy-based symbol selection
+    TRADING_STRATEGY = os.getenv("TRADING_STRATEGY", "swing").lower()
+    
+    if TRADING_STRATEGY == "conservative":
+        SYMBOLS = get_conservative_symbols(max_symbols=8)
+        print(f"📊 Conservative strategy: {len(SYMBOLS)} symbols")
+    elif TRADING_STRATEGY == "diversified":
+        SYMBOLS = get_diversified_symbols(max_symbols=10)
+        print(f"🌐 Diversified strategy: {len(SYMBOLS)} symbols")
+    elif TRADING_STRATEGY == "swing":
+        SYMBOLS = get_swing_trading_symbols(max_symbols=8)
+        print(f"⚡ Swing trading strategy: {len(SYMBOLS)} symbols")
+    elif TRADING_STRATEGY == "tech_focus":
+        SYMBOLS = get_symbols_by_sector("technology")[:6] + get_symbols_by_sector("banking")[:4]
+        print(f"💻 Tech-focused strategy: {len(SYMBOLS)} symbols")
+    else:
+        # Default: use swing trading symbols
+        SYMBOLS = get_swing_trading_symbols(max_symbols=8)
+        print(f"🔄 Default swing strategy: {len(SYMBOLS)} symbols")
+    
+    print(f"Selected symbols: {', '.join(SYMBOLS)}")
+    
+except ImportError:
+    # Fallback to hardcoded symbols if stock registry not available
+    print("⚠️  Stock registry not available, using fallback symbols")
+    SYMBOLS = [
+        "RELIANCE", "TCS", "INFY", "ICICIBANK", "SBIN",
+        "BHARTIARTL", "ITC", "KOTAKBANK", "LT", "HDFCBANK"
+    ]
 
 # Market Hours (IST)
 MARKET_TIMEZONE = pytz.timezone('Asia/Kolkata')
-MARKET_OPEN = "09:15"
-MARKET_CLOSE = "15:30"
+MARKET_OPEN     = "09:15"
+MARKET_CLOSE    = "15:30"
 PRE_MARKET_OPEN = "09:00"
 POST_MARKET_CLOSE = "15:45"
 
 # Data Source Configuration
-DATA_SOURCE = os.getenv("DATA_SOURCE", "yahoo")  # yahoo, mock, zerodha
-USE_MOCK_DATA = os.getenv("USE_MOCK_DATA", "false").lower() == "true"
+DATA_SOURCE  = "zerodha"
+USE_MOCK_DATA= os.getenv("USE_MOCK_DATA", "false").lower() == "true"
 
 # Logging
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
+LOG_FORMAT     = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+LOG_DATE_FORMAT= "%Y-%m-%d %H:%M:%S"
 
 # Paths
 BASE_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_PATH, "data")
 LOGS_PATH = os.path.join(DATA_PATH, "logs")
-HISTORICAL_DATA_PATH = os.path.join(DATA_PATH, "historical")
-LIVE_DATA_PATH = os.path.join(DATA_PATH, "live")
 
-# Database
-DB_PATH = os.path.join(DATA_PATH, "market_data.db")
+# Optional raw data folders
+HISTORICAL_DATA_PATH = os.path.join(DATA_PATH, "historical")
+LIVE_DATA_PATH       = os.path.join(DATA_PATH, "live")
+
+# Database - UNIFIED PATH FOR HISTORICAL AND LIVE
+DB_PATH = os.path.join(DATA_PATH, "market_data.sqlite")
 
 # Claude API Settings
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-3-sonnet-20240229")  # Using Sonnet for cost efficiency
-CLAUDE_MAX_TOKENS = int(os.getenv("CLAUDE_MAX_TOKENS", "1000"))
-CLAUDE_TEMPERATURE = float(os.getenv("CLAUDE_TEMPERATURE", "0.3"))  # Lower for more consistent trading decisions
+CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+CLAUDE_MAX_TOKENS  = int(os.getenv("CLAUDE_MAX_TOKENS", "1000"))
+CLAUDE_TEMPERATURE = float(os.getenv("CLAUDE_TEMPERATURE", "0.3"))
 
 # Strategy Settings
 STRATEGIES = {
     "mean_reversion": {
         "enabled": True,
         "lookback_period": 20,
-        "entry_threshold": 0.02,  # 2% below mean
-        "exit_threshold": 0.01,   # 1% above mean
-        "min_volume_ratio": 0.8   # Volume must be 80% of average
+        "entry_threshold": 0.015,
+        "exit_threshold": 0.01,
+        "min_volume_ratio": 0.8
     },
     "momentum": {
-        "enabled": False,  # Start with one strategy
+        "enabled": False,
         "lookback_period": 10,
-        "breakout_threshold": 0.03,
-        "volume_surge": 1.5  # 150% of average volume
+        "breakout_threshold": 0.025,
+        "volume_surge": 1.5
     }
 }
 
 # Risk Management
-STOP_LOSS_PERCENT = 0.02  # 2% stop loss
-TAKE_PROFIT_PERCENT = 0.04  # 4% take profit (2:1 risk-reward)
-TRAILING_STOP_PERCENT = 0.015  # 1.5% trailing stop
+STOP_LOSS_PERCENT     = 0.015
+TAKE_PROFIT_PERCENT   = 0.03
+TRAILING_STOP_PERCENT = 0.01
 
 # Paper Trading Settings
-PAPER_TRADE_COMMISSION = 20.0  # ₹20 per trade
-PAPER_TRADE_SLIPPAGE = 0.001  # 0.1% slippage
+PAPER_TRADE_COMMISSION = 0.0
+PAPER_TRADE_SLIPPAGE   = 0.0005
 
 # Performance Tracking
-MIN_TRADES_FOR_ANALYSIS = 10
-PERFORMANCE_REPORT_INTERVAL = "daily"  # daily, weekly
+MIN_TRADES_FOR_ANALYSIS   = 15
+PERFORMANCE_REPORT_INTERVAL = "daily"
 
 # Alert Settings
 ENABLE_ALERTS = True
-ALERT_CHANNELS = ["console", "file"]  # Future: email, telegram
+ALERT_CHANNELS = ["console", "file"]
 
 # Development/Debug Settings
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
-DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"  # Safety first!
+DRY_RUN    = os.getenv("DRY_RUN", "true").lower() == "true"
+
+# NEW: Symbol Management Functions
+def get_trading_symbols(strategy: str = None) -> list:
+    """
+    Get symbols for specific trading strategy.
+    
+    Args:
+        strategy: "conservative", "swing", "diversified", "tech_focus", or None for current
+    
+    Returns:
+        List of trading symbols
+    """
+    try:
+        from src.stock_registry import (
+            get_swing_trading_symbols, 
+            get_conservative_symbols,
+            get_diversified_symbols,
+            get_symbols_by_sector
+        )
+        
+        if strategy == "conservative":
+            return get_conservative_symbols(max_symbols=8)
+        elif strategy == "diversified":
+            return get_diversified_symbols(max_symbols=10)
+        elif strategy == "swing":
+            return get_swing_trading_symbols(max_symbols=8)
+        elif strategy == "tech_focus":
+            return get_symbols_by_sector("technology")[:6] + get_symbols_by_sector("banking")[:4]
+        else:
+            return SYMBOLS  # Current configured symbols
+    except ImportError:
+        return SYMBOLS  # Fallback
+
+
+def switch_trading_strategy(new_strategy: str):
+    """
+    Switch to a different trading strategy.
+    
+    Args:
+        new_strategy: "conservative", "swing", "diversified", "tech_focus"
+    """
+    global SYMBOLS
+    new_symbols = get_trading_symbols(new_strategy)
+    SYMBOLS = new_symbols
+    print(f"🔄 Switched to {new_strategy} strategy: {len(SYMBOLS)} symbols")
+    print(f"New symbols: {', '.join(SYMBOLS)}")
+
+
+def get_symbol_info(symbol: str) -> dict:
+    """
+    Get detailed information about a trading symbol.
+    
+    Args:
+        symbol: Stock symbol
+        
+    Returns:
+        Dict with symbol information or empty dict if not found
+    """
+    try:
+        from src.stock_registry import get_stock_registry
+        registry = get_stock_registry()
+        info = registry.get_stock_info(symbol)
+        if info:
+            return {
+                'symbol': info.symbol,
+                'company_name': info.company_name,
+                'sector': info.sector.value,
+                'market_cap': info.market_cap.value,
+                'liquidity': info.liquidity.value,
+                'is_index_stock': info.is_index_stock,
+                'avg_daily_volume': info.avg_daily_volume,
+                'typical_spread_bps': info.typical_spread_bps,
+                'notes': info.notes
+            }
+    except ImportError:
+        pass
+    
+    return {}
+
 
 # Validate configuration
 def validate_config():
-    """Validate configuration settings."""
     errors = []
-    
     if INITIAL_CAPITAL <= 0:
         errors.append("INITIAL_CAPITAL must be positive")
-        
-    if not 0 < MAX_RISK_PER_TRADE <= 0.1:
-        errors.append("MAX_RISK_PER_TRADE should be between 0 and 10%")
-        
+    if not 0 < MAX_RISK_PER_TRADE <= 0.05:
+        errors.append("MAX_RISK_PER_TRADE should be between 0 and 5%")
     if not SYMBOLS:
         errors.append("No symbols configured for trading")
-        
     if errors:
         raise ValueError(f"Configuration errors: {', '.join(errors)}")
 
-# Run validation on import
 validate_config()
 
 # Helper functions
 def is_market_hours(timestamp=None):
-    """Check if given timestamp is during market hours."""
     if timestamp is None:
         timestamp = datetime.now(MARKET_TIMEZONE)
     elif timestamp.tzinfo is None:
         timestamp = MARKET_TIMEZONE.localize(timestamp)
-    
     current_time = timestamp.time()
     market_open = datetime.strptime(MARKET_OPEN, "%H:%M").time()
     market_close = datetime.strptime(MARKET_CLOSE, "%H:%M").time()
-    
-    # Check if it's a weekday (Monday = 0, Sunday = 6)
-    if timestamp.weekday() > 4:  # Saturday or Sunday
+    if timestamp.weekday() > 4:
         return False
-    
     return market_open <= current_time <= market_close
 
-def get_symbol_for_yahoo(symbol):
-    """Get the appropriate Yahoo Finance symbol format."""
-    if symbol in YAHOO_SYMBOLS:
-        return YAHOO_SYMBOLS[symbol][0]  # Return primary format
-    return f"{symbol}.NS"  # Default to NSE format
+def calculate_position_size(capital: float, risk_percent: float, entry_price: float, stop_loss: float) -> int:
+    risk_amount   = capital * risk_percent
+    risk_per_share= abs(entry_price - stop_loss)
+    if risk_per_share <= 0:
+        return 0
+    position_size = int(risk_amount / risk_per_share)
+    min_shares    = int(MIN_TRADE_VALUE / entry_price) + 1
+    max_shares    = int((capital * MAX_POSITION_SIZE) / entry_price)
+    return min(max(position_size, min_shares), max_shares)
 
-# Display configuration on import (if debug)
-if DEBUG_MODE:
-    print("Configuration loaded:")
-    print(f"  Capital: ₹{INITIAL_CAPITAL}")
-    print(f"  Risk per trade: {MAX_RISK_PER_TRADE*100}%")
-    print(f"  Symbols: {len(SYMBOLS)}")
-    print(f"  Data source: {DATA_SOURCE}")
-    print(f"  Mock data: {USE_MOCK_DATA}")
+
+# Print configuration summary
+if __name__ == "__main__":
+    print("\n🤖 Trading Bot Configuration Summary")
+    print("=" * 50)
+    print(f"💰 Capital: ₹{INITIAL_CAPITAL:,.0f}")
+    print(f"📊 Strategy: {TRADING_STRATEGY.title()}")
+    print(f"📈 Symbols: {len(SYMBOLS)} - {', '.join(SYMBOLS[:5])}{'...' if len(SYMBOLS) > 5 else ''}")
+    print(f"⚠️  Risk per trade: {MAX_RISK_PER_TRADE*100:.1f}%")
+    print(f"🛑 Stop loss: {STOP_LOSS_PERCENT*100:.1f}%")
+    print(f"🎯 Target profit: {TAKE_PROFIT_PERCENT*100:.1f}%")
+    print(f"🧠 Claude model: {CLAUDE_MODEL}")
+    print(f"🏪 Market hours: {MARKET_OPEN} - {MARKET_CLOSE} IST")
+    print("=" * 50)

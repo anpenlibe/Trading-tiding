@@ -3,12 +3,12 @@ Module: data_collector.py
 Purpose: Fetch and store market data from various sources with fallback support
 Author: Trading Bot Developer
 Created: 2025-06-12
-Modified: 2025-06-12
+Modified: 2025-06-30 - Refactored: removed embedded indicators, fixed encapsulation, unified pipeline
 
 This module handles:
-- Multi-source data fetching (Dhan, yfinance, Twelve Data)
+- Multi-source data fetching (Zerodha, Mock)
 - 5-minute interval collection during market hours
-- Technical indicator calculation
+- Technical indicator calculation via indicator_engine
 - Data validation and storage
 - Caching for performance
 """
@@ -24,9 +24,6 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from collections import defaultdict
 import json
-import requests
-import yfinance as yf
-from decimal import Decimal
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,34 +33,12 @@ from src.config import (
     SYMBOLS, DATA_PATH, DB_PATH, MARKET_TIMEZONE,
     MARKET_OPEN, MARKET_CLOSE, is_market_hours
 )
+from src.interfaces import BaseMarketDataAPI, MarketData
+from src.data_sources import ZerodhaAPI, MockAPI  # FIXED: Removed non-existent API imports
+from src.indicator_engine import calculate_all_indicators  # FIXED: Use unified indicator engine
 
 # Initialize logger
 logger = get_data_logger()
-
-
-@dataclass
-class MarketData:
-    """Data structure for market data"""
-    symbol: str
-    timestamp: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
-    source: str = "unknown"
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            'symbol': self.symbol,
-            'timestamp': self.timestamp.isoformat(),
-            'open': self.open,
-            'high': self.high,
-            'low': self.low,
-            'close': self.close,
-            'volume': self.volume,
-            'source': self.source
-        }
 
 
 class MemoryCache:
@@ -267,7 +242,7 @@ class DatabaseManager:
                 (symbol, timestamp, open, high, low, close, volume, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                data.symbol, data.timestamp, data.open, data.high,
+                data.symbol, data.timestamp.isoformat(sep='T'), data.open, data.high,
                 data.low, data.close, data.volume, data.source
             ))
             
@@ -286,13 +261,16 @@ class DatabaseManager:
         try:
             start_time = time.time()
             
+            # Convert timestamp to string format for SQLite compatibility
+            timestamp_str = timestamp.isoformat(sep='T') if hasattr(timestamp, 'isoformat') else str(timestamp)
+            
             self.conn.execute('''
                 INSERT OR REPLACE INTO indicators 
                 (symbol, timestamp, sma_20, sma_50, sma_200, rsi_14, 
                  macd, macd_signal, macd_histogram, volume_avg_20, price_change_pct)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                symbol, timestamp,
+                symbol, timestamp_str,
                 indicators.get('sma_20'), indicators.get('sma_50'), indicators.get('sma_200'),
                 indicators.get('rsi_14'), indicators.get('macd'), indicators.get('macd_signal'),
                 indicators.get('macd_histogram'), indicators.get('volume_avg_20'),
@@ -318,10 +296,12 @@ class DatabaseManager:
             ORDER BY timestamp DESC
             LIMIT ?
         '''
-        
+    
         df = pd.read_sql_query(query, self.conn, params=(symbol, periods))
         if not df.empty:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            # Handle timezone-aware and timezone-naive timestamps
+            df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', utc=True)
+            df['timestamp'] = df['timestamp'].dt.tz_localize(None)  # Remove timezone for sorting
             df = df.sort_values('timestamp')
         return df
     
@@ -354,235 +334,6 @@ class DatabaseManager:
             logger.logger.info("Database connection closed")
 
 
-class IndicatorCalculator:
-    """Calculate technical indicators from price data"""
-    
-    @staticmethod
-    def calculate_sma(data: pd.Series, period: int) -> Optional[float]:
-        """Calculate Simple Moving Average"""
-        if len(data) >= period:
-            return float(data.rolling(window=period).mean().iloc[-1])
-        return None
-    
-    @staticmethod
-    def calculate_rsi(data: pd.Series, period: int = 14) -> Optional[float]:
-        """Calculate Relative Strength Index"""
-        if len(data) < period + 1:
-            return None
-        
-        # Calculate price changes
-        delta = data.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        
-        # Calculate RS and RSI
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None
-    
-    @staticmethod
-    def calculate_macd(data: pd.Series, fast: int = 12, slow: int = 26, 
-                      signal: int = 9) -> Dict[str, Optional[float]]:
-        """Calculate MACD indicator"""
-        if len(data) < slow:
-            return {'macd': None, 'macd_signal': None, 'macd_histogram': None}
-        
-        # Calculate exponential moving averages
-        ema_fast = data.ewm(span=fast, adjust=False).mean()
-        ema_slow = data.ewm(span=slow, adjust=False).mean()
-        
-        # Calculate MACD line
-        macd_line = ema_fast - ema_slow
-        
-        # Calculate signal line
-        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-        
-        # Calculate histogram
-        histogram = macd_line - signal_line
-        
-        return {
-            'macd': float(macd_line.iloc[-1]) if not np.isnan(macd_line.iloc[-1]) else None,
-            'macd_signal': float(signal_line.iloc[-1]) if not np.isnan(signal_line.iloc[-1]) else None,
-            'macd_histogram': float(histogram.iloc[-1]) if not np.isnan(histogram.iloc[-1]) else None
-        }
-    
-    def calculate_all_indicators(self, df: pd.DataFrame) -> Dict[str, float]:
-        """Calculate all indicators for the latest data point"""
-        indicators = {}
-        
-        if df.empty:
-            return indicators
-        
-        # Price-based indicators
-        close_prices = df['close']
-        
-        # Moving averages
-        indicators['sma_20'] = self.calculate_sma(close_prices, 20)
-        indicators['sma_50'] = self.calculate_sma(close_prices, 50)
-        indicators['sma_200'] = self.calculate_sma(close_prices, 200)
-        
-        # RSI
-        indicators['rsi_14'] = self.calculate_rsi(close_prices, 14)
-        
-        # MACD
-        macd_values = self.calculate_macd(close_prices)
-        indicators.update(macd_values)
-        
-        # Volume indicators
-        volumes = df['volume']
-        indicators['volume_avg_20'] = self.calculate_sma(volumes, 20)
-        
-        # Price change percentage
-        if len(close_prices) >= 2:
-            indicators['price_change_pct'] = float(
-                ((close_prices.iloc[-1] - close_prices.iloc[-2]) / close_prices.iloc[-2]) * 100
-            )
-        
-        # Log calculated indicators
-        for name, value in indicators.items():
-            if value is not None:
-                logger.log_indicator_calculation(df['symbol'].iloc[-1] if 'symbol' in df else "UNKNOWN", name, value)
-        
-        return indicators
-
-
-class DhanAPI:
-    """Dhan API wrapper for market data"""
-    
-    def __init__(self, access_token: Optional[str] = None):
-        self.access_token = access_token
-        self.base_url = "https://api.dhan.co"
-        self.headers = {
-            "access-token": access_token,
-            "Content-Type": "application/json"
-        } if access_token else {}
-        
-        # Note: Implement actual Dhan API integration when you have the token
-        logger.logger.warning("Dhan API initialized in mock mode - implement actual API when token available")
-    
-    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch OHLC data from Dhan API"""
-        # TODO: Implement actual Dhan API call
-        # For now, return None to trigger fallback
-        logger.logger.debug(f"Dhan API call for {symbol} - mock mode")
-        return None
-
-
-class YFinanceAPI:
-    """yfinance wrapper for market data"""
-    
-    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch OHLC data from Yahoo Finance"""
-        try:
-            start_time = time.time()
-            
-            # Add .NS suffix for NSE stocks
-            ticker_symbol = f"{symbol}.NS"
-            ticker = yf.Ticker(ticker_symbol)
-            
-            # Get intraday data (5 minute intervals)
-            hist = ticker.history(period="1d", interval="5m")
-            
-            if hist.empty:
-                logger.log_api_call("yfinance", symbol, False, time.time() - start_time, "No data returned")
-                return None
-            
-            # Get the latest row
-            latest = hist.iloc[-1]
-            
-            # Create MarketData object
-            data = MarketData(
-                symbol=symbol,
-                timestamp=hist.index[-1].to_pydatetime(),
-                open=float(latest['Open']),
-                high=float(latest['High']),
-                low=float(latest['Low']),
-                close=float(latest['Close']),
-                volume=int(latest['Volume']),
-                source="yfinance"
-            )
-            
-            duration = time.time() - start_time
-            logger.log_api_call("yfinance", symbol, True, duration)
-            
-            return data
-            
-        except Exception as e:
-            duration = time.time() - start_time
-            logger.log_api_call("yfinance", symbol, False, duration, str(e))
-            return None
-
-
-class TwelveDataAPI:
-    """Twelve Data API wrapper"""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key
-        self.base_url = "https://api.twelvedata.com"
-        
-        if not api_key:
-            logger.logger.warning("Twelve Data API key not provided - this fallback won't work")
-    
-    def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch OHLC data from Twelve Data"""
-        if not self.api_key:
-            return None
-        
-        try:
-            start_time = time.time()
-            
-            # Twelve Data expects exchange suffix
-            params = {
-                "symbol": symbol,
-                "exchange": "NSE",
-                "interval": "5min",
-                "outputsize": 1,
-                "apikey": self.api_key
-            }
-            
-            response = requests.get(
-                f"{self.base_url}/time_series",
-                params=params,
-                timeout=10
-            )
-            
-            if response.status_code != 200:
-                logger.log_api_call("twelve_data", symbol, False, time.time() - start_time, 
-                                  f"HTTP {response.status_code}")
-                return None
-            
-            data = response.json()
-            if "values" not in data or not data["values"]:
-                logger.log_api_call("twelve_data", symbol, False, time.time() - start_time, 
-                                  "No values in response")
-                return None
-            
-            # Get the latest data point
-            latest = data["values"][0]
-            
-            market_data = MarketData(
-                symbol=symbol,
-                timestamp=datetime.strptime(latest["datetime"], "%Y-%m-%d %H:%M:%S"),
-                open=float(latest["open"]),
-                high=float(latest["high"]),
-                low=float(latest["low"]),
-                close=float(latest["close"]),
-                volume=int(latest["volume"]),
-                source="twelve_data"
-            )
-            
-            duration = time.time() - start_time
-            logger.log_api_call("twelve_data", symbol, True, duration)
-            
-            return market_data
-            
-        except Exception as e:
-            duration = time.time() - start_time
-            logger.log_api_call("twelve_data", symbol, False, duration, str(e))
-            return None
-
-
 class DataCollector:
     """Main data collection orchestrator"""
     
@@ -590,17 +341,29 @@ class DataCollector:
         logger.logger.info("Initializing DataCollector")
         
         # Initialize components
-        self.db = DatabaseManager(DB_PATH)
+        self._db = DatabaseManager(DB_PATH)  # FIXED: Made private
         self.cache = MemoryCache(ttl_seconds=300)  # 5 minute cache
         self.validator = DataValidator()
-        self.calculator = IndicatorCalculator()
         
-        # Initialize APIs (in order of preference)
-        self.apis = [
-            DhanAPI(),  # Primary
-            YFinanceAPI(),  # Fallback 1
-            TwelveDataAPI()  # Fallback 2
+        # Initialize APIs using the interface
+        self.apis: List[BaseMarketDataAPI] = [
+            ZerodhaAPI(),
         ]
+        
+        # Filter out unavailable APIs
+        available_apis = []
+        for api in self.apis:
+            if api.is_available():
+                available_apis.append(api)
+                logger.logger.info(f"API {api.get_name()} is available")
+            else:
+                logger.logger.warning(f"API {api.get_name()} is not available")
+        
+        self.apis = available_apis
+        
+        if not self.apis:
+            logger.logger.warning("No APIs available! Only mock data will be used.")
+            self.apis = [MockAPI()]  # Ensure at least mock is available
         
         # Statistics
         self.stats = {
@@ -611,7 +374,20 @@ class DataCollector:
             'validation_failures': 0
         }
         
-        logger.logger.info("DataCollector initialized successfully")
+        logger.logger.info(f"DataCollector initialized with {len(self.apis)} available APIs")
+    
+    # FIXED: Public methods for external access (Task 3)
+    def save_market_data(self, data: MarketData) -> bool:
+        """Public API: Save market data to database"""
+        return self._db.save_market_data(data)
+    
+    def save_indicators(self, symbol: str, timestamp: datetime, indicators: Dict[str, float]) -> bool:
+        """Public API: Save indicators to database"""
+        return self._db.save_indicators(symbol, timestamp, indicators)
+    
+    def get_recent_data(self, symbol: str, periods: int = 200) -> pd.DataFrame:
+        """Public API: Get recent price data"""
+        return self._db.get_recent_data(symbol, periods)
     
     def fetch_with_fallback(self, symbol: str) -> Optional[MarketData]:
         """Fetch data with automatic fallback to backup sources"""
@@ -624,14 +400,14 @@ class DataCollector:
         
         # Try each API in order
         for api in self.apis:
-            api_name = api.__class__.__name__
+            api_name = api.get_name()
             self.stats['api_calls'][api_name] += 1
             
             try:
                 data = api.fetch_ohlc(symbol)
                 if data:
                     # Validate data
-                    previous_close = self.db.get_previous_close(symbol)
+                    previous_close = self._db.get_previous_close(symbol)
                     is_valid, error = self.validator.validate(data, previous_close)
                     
                     if is_valid:
@@ -653,21 +429,27 @@ class DataCollector:
         logger.logger.error(f"All APIs failed for symbol: {symbol}")
         return None
     
-    def collect_and_store(self, symbol: str) -> bool:
-        """Collect data for a symbol and store in database"""
-        logger.logger.debug(f"Collecting data for {symbol}")
+    def process_and_save(self, data: MarketData) -> bool:
+        """
+        UNIFIED PIPELINE: Process market data through validation, indicators, and storage
+        This is the main entry point for both live and historical data
+        """
+        logger.logger.debug(f"Processing data for {data.symbol}")
         
-        # Fetch data
-        data = self.fetch_with_fallback(symbol)
-        if not data:
+        # Validate data
+        previous_close = self._db.get_previous_close(data.symbol)
+        is_valid, error = self.validator.validate(data, previous_close)
+        
+        if not is_valid:
+            logger.log_data_quality(data.symbol, error, "WARNING")
             return False
         
-        # Save to database
-        if not self.db.save_market_data(data):
+        # Save market data
+        if not self._db.save_market_data(data):
             return False
         
         # Get recent data for indicator calculation
-        df = self.db.get_recent_data(symbol, periods=200)
+        df = self._db.get_recent_data(data.symbol, periods=200)
         if len(df) >= 20:  # Minimum data for indicators
             # Add current data to dataframe for calculation
             new_row = pd.DataFrame([{
@@ -680,13 +462,25 @@ class DataCollector:
             }])
             df = pd.concat([df, new_row], ignore_index=True)
             
-            # Calculate indicators
-            indicators = self.calculator.calculate_all_indicators(df)
+            # Calculate indicators using unified engine
+            indicators = calculate_all_indicators(df)
             
             # Save indicators
-            self.db.save_indicators(symbol, data.timestamp, indicators)
+            self._db.save_indicators(data.symbol, data.timestamp, indicators)
         
         return True
+    
+    def collect_and_store(self, symbol: str) -> bool:
+        """Collect data for a symbol and store using unified pipeline"""
+        logger.logger.debug(f"Collecting data for {symbol}")
+        
+        # Fetch data
+        data = self.fetch_with_fallback(symbol)
+        if not data:
+            return False
+        
+        # Process through unified pipeline
+        return self.process_and_save(data)
     
     def collect_all_symbols(self) -> Dict[str, bool]:
         """Collect data for all configured symbols"""
@@ -738,7 +532,7 @@ class DataCollector:
                                           WHERE symbol = ? AND DATE(timestamp) = ?)
                 '''
                 
-                result = self.db.conn.execute(
+                result = self._db.conn.execute(
                     query, (symbol, today, symbol, today)
                 ).fetchone()
                 
@@ -749,10 +543,10 @@ class DataCollector:
                         FROM price_data
                         WHERE symbol = ? AND DATE(timestamp) = ?
                     '''
-                    vwap_result = self.db.conn.execute(vwap_query, (symbol, today)).fetchone()
+                    vwap_result = self._db.conn.execute(vwap_query, (symbol, today)).fetchone()
                     
                     # Save daily stats
-                    self.db.conn.execute('''
+                    self._db.conn.execute('''
                         INSERT OR REPLACE INTO daily_stats 
                         (symbol, date, open, high, low, close, volume, vwap, trades_count)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -766,7 +560,7 @@ class DataCollector:
             except Exception as e:
                 logger.logger.error(f"Failed to update daily stats for {symbol}: {e}")
         
-        self.db.conn.commit()
+        self._db.conn.commit()
         logger.logger.info("Daily statistics updated")
     
     def generate_summary(self) -> Dict[str, Any]:
@@ -821,7 +615,7 @@ class DataCollector:
     def close(self):
         """Cleanup resources"""
         logger.logger.info("Shutting down DataCollector")
-        self.db.close()
+        self._db.close()
 
 
 def main():
