@@ -8,9 +8,9 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.ai_brain import ClaudeAI, SimpleRuleBasedModel
-from src.data_collector import DataCollector
-from src.config import SYMBOLS
+from ai_brain import ClaudeAI, SimpleRuleBasedModel
+from data_collector import DataCollector
+from config import SYMBOLS
 import pandas as pd
 from datetime import datetime
 
@@ -194,7 +194,7 @@ def main():
     print("=" * 60)
     
     # Check if API key is configured
-    from src.config import ANTHROPIC_API_KEY
+    from config import ANTHROPIC_API_KEY
     if not ANTHROPIC_API_KEY or ANTHROPIC_API_KEY == "your-claude-api-key-here":
         print("❌ Anthropic API key not configured!")
         print("Please set ANTHROPIC_API_KEY in your .env file")

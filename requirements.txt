@@ -1,27 +1,105 @@
-# Core dependencies
-pandas==2.0.3
-numpy==1.24.3
-yfinance==0.2.18
-anthropic==0.26.0
-python-dotenv==1.0.0
+# Core Dependencies
+pandas==2.2.2
+numpy==1.26.4
+python-dotenv==1.0.1
+pytz==2024.1
 
-# Scheduling and utilities
-schedule==1.2.0
-pytz==2023.3
+# AI Integration
+anthropic==0.37.1
 
-# Testing
-pytest==7.4.0
-pytest-cov==4.1.0
-pytest-mock==3.11.1
+# Market Data APIs
+kiteconnect==5.0.1
+yfinance==0.2.38
+requests==2.31.0
 
-# Logging and monitoring
-colorlog==6.7.0
+# Technical Analysis
+ta==0.11.0
+pandas-ta==0.3.14b0
 
 # Database
-sqlalchemy==2.0.23
+# sqlite3 is included in Python standard library
 
-# Future additions (commented out for now)
-# ta-lib==0.4.28  # Requires separate installation
-# pandas-ta==0.3.14b
-# vectorbt==0.26.0  # For backtesting
-# streamlit==1.25.0  # For web dashboard
+# Logging and Utilities
+colorama==0.4.6
+tabulate==0.9.0
+
+# Testing (Optional - for development)
+pytest==8.1.1
+pytest-cov==5.0.0
+pytest-asyncio==0.23.6
+pytest-mock==3.12.0
+
+# Development Tools (Optional)
+black==24.3.0
+flake8==7.0.0
+mypy==1.9.0
+ipython==8.23.0
+
+# Performance Monitoring (Optional)
+psutil==5.9.8
+memory-profiler==0.61.0
+
+# Data Visualization (Optional - for monitoring/analysis)
+matplotlib==3.8.4
+seaborn==0.13.2
+plotly==5.20.0
+
+# Scheduling (if using scheduler.py)
+schedule==1.2.0
+
+# Web Framework (if building dashboard)
+# streamlit==1.32.2
+flask==3.0.2
+# fastapi==0.110.0
+
+# Additional Data Processing
+openpyxl==3.1.2  # For Excel file handling
+xlrd==2.0.1      # For reading Excel files
+scipy==1.13.0    # For statistical calculations
+
+# Async Support (if needed)
+aiohttp==3.9.3
+asyncio==3.4.3
+
+# Environment Management
+python-decouple==3.8
+
+# Time Series Analysis (Optional)
+statsmodels==0.14.1
+# prophet==1.1.5  # Facebook's time series forecasting
+
+# Machine Learning (Future Enhancement)
+# scikit-learn==1.4.1
+# xgboost==2.0.3
+# lightgbm==4.3.0
+# tensorflow==2.16.1
+# torch==2.2.1
+
+# Backtesting Frameworks (Future Enhancement)
+# backtrader==1.9.78.123
+# zipline-reloaded==3.0.3
+# vectorbt==0.26.2
+
+# Crypto Trading (Future Enhancement)
+# ccxt==4.2.75
+
+# News and Sentiment Analysis (Future Enhancement)
+# newsapi-python==0.2.7
+# vaderSentiment==3.3.2
+# textblob==0.18.0
+
+# Note: Versions are set to stable releases as of early 2024
+# Update versions as needed for security patches or new features
+
+# Installation Instructions:
+# 1. Create virtual environment: python -m venv venv
+# 2. Activate it: 
+#    - Windows: venv\Scripts\activate
+#    - Linux/Mac: source venv/bin/activate
+# 3. Install dependencies: pip install -r requirements.txt
+#
+# For production deployment, consider using:
+# pip install --no-cache-dir -r requirements.txt
+#
+# To generate updated requirements from current environment:
+# pip freeze > requirements_snapshot.txt
