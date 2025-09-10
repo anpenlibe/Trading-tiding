@@ -291,3 +291,7 @@ if __name__ == "__main__":
     print(f"🧠 Claude model: {CLAUDE_MODEL}")
     print(f"🏪 Market hours: {MARKET_OPEN} - {MARKET_CLOSE} IST")
     print("=" * 50)
+
+# Testing Configuration
+MIN_TRADE_VALUE_TEST = 100  # Minimum trade value for testing
+TEST_MODE = False  # Flag to enable test mode

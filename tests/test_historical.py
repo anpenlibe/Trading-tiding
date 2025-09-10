@@ -70,7 +70,7 @@ def simple_backtest():
     
     try:
         from src.config import DB_PATH, SYMBOLS
-        from src.data_collector import IndicatorCalculator
+        from src.indicator_engine import compute_indicators
         
         conn = sqlite3.connect(DB_PATH)
         
@@ -100,8 +100,7 @@ def simple_backtest():
         print(f"   Period: {df['timestamp'].min()} to {df['timestamp'].max()}")
         
         # Calculate indicators
-        calculator = IndicatorCalculator()
-        indicators = calculator.calculate_all_indicators(df)
+        indicators = compute_indicators(df)
         
         print(f"\n📊 Latest Indicators:")
         for key, value in indicators.items():
@@ -149,11 +148,11 @@ def test_ai_brain():
             return False
         
         # Try to import AI brain
-        from src.ai_brain_optimized import OptimizedClaudeAI
+        from src.ai_brain import ClaudeAI
         print("✅ AI Brain module found")
         
         # Initialize with initial_capital parameter
-        ai = OptimizedClaudeAI(initial_capital=1000)
+        ai = ClaudeAI(initial_capital=1000)
         print("✅ AI Brain initialized")
         
         return True

@@ -612,6 +612,28 @@ class DataCollector:
         if current_time >= "15:35":  # After market close
             self.update_daily_stats()
     
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+        """Parse timestamp from multiple date formats"""
+        formats = [
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
+            "%d-%m-%Y %H:%M:%S",
+            "%d-%m-%Y",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y"
+        ]
+        
+        for fmt in formats:
+            try:
+                return datetime.strptime(timestamp_str, fmt)
+            except ValueError:
+                continue
+        
+        logger.logger.warning(f"Unable to parse timestamp: {timestamp_str}")
+        return None
+    
     def close(self):
         """Cleanup resources"""
         logger.logger.info("Shutting down DataCollector")
