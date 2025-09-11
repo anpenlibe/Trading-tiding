@@ -1,8 +1,8 @@
 # 📚 Project Table of Contents - Central Navigation
 
 **Navigation Hub for the Claude AI Trading System**  
-**Version**: 3.0 (Post Phase 3 Reorganization)  
-**Last Updated**: January 2025  
+**Version**: State 0 Baseline  
+**Last Updated**: September 2025  
 
 ---
 
@@ -11,7 +11,7 @@
 | **I Want To...** | **Go To** | **Description** |
 |-------------------|-----------|-----------------|
 | **🚀 Run the trading system** | [README.md](./README.md) | Main project overview and quick start |
-| **🎯 Check complete system status** | [SYSTEM_STATUS.md](./SYSTEM_STATUS.md) | **⭐ CENTRAL TRACKING HUB** - Single source of truth |
+| **🎯 Check complete system status** | [SYSTEM_STATUS.md](./SYSTEM_STATUS.md) | **⭐ STATE 0 BASELINE** - Single source of truth |
 | **📊 Check system architecture** | [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) | Architecture lookup table for changes |
 | **🗺️ See current system structure** | [PROJECT_MAP.md](./PROJECT_MAP.md) | Current system structure and components |
 | **🏗️ Understand the code structure** | [src/README.md](./src/README.md) | Detailed module documentation |
