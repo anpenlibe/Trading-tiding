@@ -9,7 +9,7 @@ from dataclasses import asdict
 
 from src.interfaces import BaseDecisionModel, TradingSignal, MarketData
 from src.ai.prompt_builder import PromptBuilder
-from src.risk_manager import SimpleRiskManager
+from src.core.risk_manager import SimpleRiskManager
 from src.data.config import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_MAX_TOKENS, CLAUDE_TEMPERATURE,
     INITIAL_CAPITAL, MAX_DECISION_HISTORY
@@ -67,6 +67,16 @@ class ClaudeAI(BaseDecisionModel):
                 logger.error(f"AI circuit breaker open - {self.consecutive_failures} consecutive failures")
                 return self._safe_default_response("AI temporarily unavailable")
             
+            # Debug: Check data format
+            logger.debug(f"market_data type: {type(market_data)}")
+            if isinstance(market_data, dict):
+                logger.error(f"Received dict instead of DataFrame: {list(market_data.keys())}")
+                return self._safe_default_response("Data format error - expected DataFrame")
+            
+            if not hasattr(market_data, 'iloc'):
+                logger.error(f"Invalid market_data type: {type(market_data)}")
+                return self._safe_default_response("Invalid data format")
+            
             # Get symbol from DataFrame
             symbol = market_data['symbol'].iloc[-1] if 'symbol' in market_data else "UNKNOWN"
             current_price = float(market_data['close'].iloc[-1])
@@ -91,7 +101,7 @@ class ClaudeAI(BaseDecisionModel):
             
             # Create prompt
             prompt = self.prompt_builder.create_analysis_prompt(
-                latest_data, indicators, context
+                symbol, market_data, indicators, context
             )
             
             # Get Claude's response with timeout

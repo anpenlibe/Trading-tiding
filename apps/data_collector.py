@@ -19,8 +19,13 @@ Features:
 import argparse
 import logging
 import time
+import sys
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data_collector import DataCollector
 from src.data.data_sources import ZerodhaAPI, MarketData

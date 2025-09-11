@@ -1,0 +1,235 @@
+"""
+Trading Mode Safety System
+Purpose: Prevent accidental use of mock data in live trading
+Created: 2025-01-11
+"""
+
+from enum import Enum
+from typing import Optional
+from dataclasses import dataclass
+from src.interfaces import MarketData
+from src.exceptions import TradingSystemError
+from src.utils.logger import setup_logger
+
+logger = setup_logger(__name__, 'trading_modes.log')
+
+
+class TradingMode(Enum):
+    """Trading mode enumeration for safety"""
+    PAPER = "paper"      # Paper trading - can use any data source
+    LIVE = "live"        # Live trading - MUST use verified live data only
+    BACKTEST = "backtest"  # Historical simulation - uses historical data
+
+
+@dataclass
+class TradingSafetyConfig:
+    """Configuration for trading safety checks"""
+    mode: TradingMode
+    require_live_data: bool = False
+    allow_mock_fallback: bool = True
+    require_user_confirmation: bool = False
+    
+    def __post_init__(self):
+        """Set safety defaults based on trading mode"""
+        if self.mode == TradingMode.LIVE:
+            self.require_live_data = True
+            self.allow_mock_fallback = False
+            self.require_user_confirmation = True
+        elif self.mode == TradingMode.PAPER:
+            self.require_live_data = False
+            self.allow_mock_fallback = True
+            self.require_user_confirmation = False
+        elif self.mode == TradingMode.BACKTEST:
+            self.require_live_data = False
+            self.allow_mock_fallback = False  # Should use historical data
+            self.require_user_confirmation = False
+
+
+class TradingSafetyValidator:
+    """Validates data sources and trading mode safety"""
+    
+    def __init__(self, safety_config: TradingSafetyConfig):
+        self.config = safety_config
+        self.live_confirmation_given = False
+        
+    def validate_market_data(self, market_data: MarketData) -> bool:
+        """
+        Validate that market data is appropriate for current trading mode.
+        
+        Args:
+            market_data: Market data to validate
+            
+        Returns:
+            bool: True if data is safe to use
+            
+        Raises:
+            TradingSystemError: If data source is unsafe for current mode
+        """
+        if not market_data:
+            raise TradingSystemError("No market data provided for validation")
+        
+        data_source = market_data.source.lower()
+        
+        # CRITICAL: Live trading mode validation
+        if self.config.mode == TradingMode.LIVE:
+            if data_source == "mock":
+                raise TradingSystemError(
+                    "🚨 SAFETY VIOLATION: Cannot use MOCK data in LIVE trading mode! "
+                    "This would result in trading real money on fake market data."
+                )
+            
+            if data_source not in ["zerodha", "live"]:
+                raise TradingSystemError(
+                    f"🚨 SAFETY VIOLATION: Live trading requires verified live data source. "
+                    f"Got: {data_source}. Expected: 'zerodha' or 'live'"
+                )
+            
+            # Additional validation for live mode
+            if not self._is_live_data_fresh(market_data):
+                logger.warning(f"Live data may be stale: {market_data.timestamp}")
+        
+        # Paper trading mode - allow mock data
+        elif self.config.mode == TradingMode.PAPER:
+            # Paper trading can use any data source
+            if data_source == "mock":
+                logger.debug("Using mock data for paper trading (safe)")
+            else:
+                logger.debug(f"Using {data_source} data for paper trading")
+        
+        # Backtest mode - should use historical data
+        elif self.config.mode == TradingMode.BACKTEST:
+            if data_source not in ["historical", "simulation_zerodha", "simulation_mock"]:
+                logger.warning(f"Backtest using non-historical data: {data_source}")
+        
+        return True
+    
+    def _is_live_data_fresh(self, market_data: MarketData) -> bool:
+        """Check if live data is reasonably fresh (within last few minutes)"""
+        from datetime import datetime, timedelta
+        
+        if not market_data.timestamp:
+            return False
+            
+        now = datetime.now()
+        data_time = market_data.timestamp
+        
+        # Convert to datetime if needed
+        if hasattr(data_time, 'to_pydatetime'):
+            data_time = data_time.to_pydatetime()
+        
+        # Data should be within last 10 minutes for live trading
+        max_age = timedelta(minutes=10)
+        age = now - data_time
+        
+        return age <= max_age
+    
+    def require_live_trading_confirmation(self) -> bool:
+        """
+        Require explicit user confirmation for live trading mode.
+        
+        Returns:
+            bool: True if confirmation given, False otherwise
+        """
+        if self.config.mode != TradingMode.LIVE:
+            return True  # No confirmation needed for non-live modes
+        
+        if self.live_confirmation_given:
+            return True  # Already confirmed
+        
+        print("🚨" * 20)
+        print("⚠️  LIVE TRADING MODE WARNING")
+        print("🚨" * 20)
+        print()
+        print("You are about to start LIVE TRADING with REAL MONEY.")
+        print("This system will execute actual trades on the stock market.")
+        print()
+        print("RISKS:")
+        print("• Real financial losses possible")
+        print("• Market volatility can cause rapid losses")  
+        print("• System bugs could result in unexpected trades")
+        print("• No guarantee of profits")
+        print()
+        print("SAFEGUARDS ENABLED:")
+        print("• Mock data fallback DISABLED")
+        print("• Live data source validation ENABLED")
+        print("• Position size limits ACTIVE")
+        print("• Stop loss protection ACTIVE")
+        print()
+        
+        confirmation1 = input("Type 'I UNDERSTAND THE RISKS' to continue: ")
+        if confirmation1 != "I UNDERSTAND THE RISKS":
+            print("❌ Live trading confirmation failed.")
+            return False
+        
+        confirmation2 = input("Type 'START LIVE TRADING' to confirm: ")
+        if confirmation2 != "START LIVE TRADING":
+            print("❌ Live trading confirmation failed.")
+            return False
+        
+        print("✅ Live trading confirmed. Starting in 3 seconds...")
+        import time
+        for i in range(3, 0, -1):
+            print(f"⏰ {i}...")
+            time.sleep(1)
+        
+        self.live_confirmation_given = True
+        logger.critical("LIVE TRADING MODE CONFIRMED BY USER")
+        return True
+    
+    def validate_trading_session_start(self) -> bool:
+        """
+        Complete validation before starting a trading session.
+        
+        Returns:
+            bool: True if safe to start trading
+        """
+        logger.info(f"Validating trading session start in {self.config.mode.value} mode")
+        
+        # Check if user confirmation is required and obtained
+        if self.config.require_user_confirmation:
+            if not self.require_live_trading_confirmation():
+                raise TradingSystemError("Live trading confirmation required but not provided")
+        
+        logger.info("Trading session validation passed")
+        return True
+
+
+def create_trading_mode_from_config(mode_str: str) -> TradingSafetyConfig:
+    """
+    Create TradingSafetyConfig from string configuration.
+    
+    Args:
+        mode_str: Trading mode as string ('paper', 'live', 'backtest')
+        
+    Returns:
+        TradingSafetyConfig: Configured safety settings
+    """
+    try:
+        mode = TradingMode(mode_str.lower())
+        return TradingSafetyConfig(mode=mode)
+    except ValueError:
+        available_modes = [m.value for m in TradingMode]
+        raise ValueError(f"Invalid trading mode: {mode_str}. Available: {available_modes}")
+
+
+# Default configurations for common use cases
+PAPER_TRADING_CONFIG = TradingSafetyConfig(
+    mode=TradingMode.PAPER,
+    require_live_data=False,
+    allow_mock_fallback=True,
+    require_user_confirmation=False
+)
+
+LIVE_TRADING_CONFIG = TradingSafetyConfig(
+    mode=TradingMode.LIVE,
+    require_live_data=True,
+    allow_mock_fallback=False,
+    require_user_confirmation=True
+)
+
+BACKTEST_CONFIG = TradingSafetyConfig(
+    mode=TradingMode.BACKTEST,
+    require_live_data=False,
+    allow_mock_fallback=False,
+    require_user_confirmation=False
+)

@@ -13,8 +13,9 @@ from datetime import datetime, timedelta
 from tabulate import tabulate
 import sys
 import os
+import argparse
 
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.config import DB_PATH, SYMBOLS
 
@@ -254,20 +255,58 @@ class DataMonitor:
 
 def main():
     """Main entry point"""
+    parser = argparse.ArgumentParser(description='Trading system data monitoring dashboard')
+    parser.add_argument('--auto', action='store_true', help='Run in automated mode without prompts')
+    parser.add_argument('--export', action='store_true', help='Export daily report automatically')
+    parser.add_argument('--continuous', action='store_true', help='Run continuously (refresh every 30s)')
+    args = parser.parse_args()
+    
     monitor = DataMonitor()
     
     try:
-        # Display dashboard
-        monitor.display_dashboard()
-        
-        # Check alerts
-        monitor.check_alerts()
-        
-        # Ask if user wants to export report
-        export = input("\nExport daily report? (y/n): ").strip().lower()
-        if export == 'y':
-            monitor.export_daily_report()
+        if args.continuous:
+            print("🔄 Continuous monitoring mode - Press Ctrl+C to stop")
+            import time
+            while True:
+                print(f"\n{'='*80}")
+                print(f"📊 Data Monitor Dashboard - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                print(f"{'='*80}")
+                
+                # Display dashboard
+                monitor.display_dashboard()
+                
+                # Check alerts
+                monitor.check_alerts()
+                
+                if args.export:
+                    monitor.export_daily_report()
+                    print("✅ Daily report exported")
+                
+                print("\n⏳ Refreshing in 30 seconds... (Press Ctrl+C to stop)")
+                time.sleep(30)
+        else:
+            # Single run mode
+            monitor.display_dashboard()
             
+            # Check alerts
+            monitor.check_alerts()
+            
+            # Handle export
+            if args.auto:
+                if args.export:
+                    monitor.export_daily_report()
+                    print("✅ Daily report exported automatically")
+            else:
+                # Interactive mode
+                export = input("\nExport daily report? (y/n): ").strip().lower()
+                if export == 'y':
+                    monitor.export_daily_report()
+            
+    except KeyboardInterrupt:
+        if args.continuous:
+            print("\n\n🛑 Monitoring stopped by user")
+        else:
+            print("\n\n🛑 Interrupted by user")
     finally:
         monitor.close()
 

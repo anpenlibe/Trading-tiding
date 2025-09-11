@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 from unittest.mock import Mock, MagicMock
 
 from src.interfaces import MarketData, TradingSignal
-from src.paper_trader import PaperTrader
-from src.risk_manager import SimpleRiskManager
+from src.core.paper_trader import PaperTrader
+from src.core.risk_manager import SimpleRiskManager
 from src.data_collector import DataCollector
 
 

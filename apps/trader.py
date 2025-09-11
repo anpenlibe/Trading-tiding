@@ -30,9 +30,9 @@ from dataclasses import asdict
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.ai_brain import ClaudeAI
-from src.risk_manager import SimpleRiskManager  
-from src.paper_trader import PaperTrader
+from src.core.ai_brain import ClaudeAI
+from src.core.risk_manager import SimpleRiskManager  
+from src.core.paper_trader import PaperTrader
 from src.data_collector import DataCollector
 from src.core.indicator_engine import calculate_all_indicators
 from src.data.config import SYMBOLS, INITIAL_CAPITAL, is_market_hours, ENABLE_ALERTS, PRICE_ALERT_THRESHOLD
@@ -271,6 +271,7 @@ class ClaudeTrader:
             Summary of trading cycle results
         """
         try:
+            start_time = time.time()
             logger.info("=" * 60)
             logger.info("Starting trading cycle")
             
@@ -279,7 +280,8 @@ class ClaudeTrader:
                 'symbols_processed': 0,
                 'signals_generated': 0,
                 'trades_executed': 0,
-                'errors': []
+                'errors': [],
+                'cycle_duration': 0.0
             }
             
             for symbol in SYMBOLS:
@@ -310,11 +312,12 @@ class ClaudeTrader:
             
             # Update tracking
             self.trading_cycles += 1
+            cycle_summary['cycle_duration'] = time.time() - start_time
             
             # Log cycle summary
             logger.info(f"Cycle complete: {cycle_summary['symbols_processed']} symbols, "
                        f"{cycle_summary['signals_generated']} signals, "
-                       f"{cycle_summary['trades_executed']} trades")
+                       f"{cycle_summary['trades_executed']} trades in {cycle_summary['cycle_duration']:.1f}s")
             
             if cycle_summary['errors']:
                 logger.warning(f"Errors encountered: {len(cycle_summary['errors'])}")

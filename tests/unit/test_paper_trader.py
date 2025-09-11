@@ -1,7 +1,7 @@
 """Unit tests for paper trader - FIXED to match actual implementation."""
 
 import pytest
-from src.paper_trader import PaperTrader
+from src.core.paper_trader import PaperTrader
 from src.interfaces import TradingSignal
 
 

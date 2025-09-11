@@ -1,7 +1,7 @@
 """Unit tests for risk manager - FIXED to match actual implementation."""
 
 import pytest
-from src.risk_manager import SimpleRiskManager
+from src.core.risk_manager import SimpleRiskManager
 from src.interfaces import TradingSignal
 from src.data.config import MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT
 

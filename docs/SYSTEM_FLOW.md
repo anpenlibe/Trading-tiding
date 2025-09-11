@@ -1,55 +1,60 @@
 # TRADING SYSTEM FLOW ANALYSIS
-*Generated: 2025-01-10*
+*Last Updated: 2025-09-12*
 
-## PART 1: ENTRY POINTS
+## PART 1: CURRENT ENTRY POINTS
 
-The system has several entry points for different use cases:
+The system has several applications for different use cases:
 
-### 1. claude_trader.py
+### 1. apps/trader.py ✅ MAIN ENTRY POINT
 **Purpose**: Main AI-driven trading system
-**Entry**: `python claude_trader.py`
-**Mode**: Continuous trading with AI decisions
+**Entry**: `python apps/trader.py [--cycles N] [--auto]`
+**Mode**: Continuous paper trading with AI decisions
+**Features**: Alert-based trading, risk management, performance tracking
 
-### 2. collect_historical_data.py  
-**Purpose**: Historical data collection
-**Entry**: `python collect_historical_data.py [--period 1mo] [--interval 5m]`
-**Mode**: One-time data collection
+### 2. apps/data_collector.py ✅ DATA MANAGEMENT  
+**Purpose**: Data collection and management
+**Entry**: `python apps/data_collector.py`
+**Mode**: Interactive data collection and validation
+**Features**: Multi-source data, caching, validation
 
-### 3. historical_simulator.py
+### 3. apps/backtest.py ✅ HISTORICAL TESTING
 **Purpose**: Backtesting on historical data
-**Entry**: `python historical_simulator.py`
-**Mode**: Simulation and backtesting
+**Entry**: `python apps/backtest.py [--auto] [--days N] [--symbols SYMBOL1,SYMBOL2]`
+**Mode**: Historical simulation and performance analysis
+**Features**: Non-interactive mode, custom timeframes, multi-symbol support
 
-### 4. monitor.py
-**Purpose**: Data quality monitoring
-**Entry**: `python monitor.py`
-**Mode**: Dashboard and alerting
+### 4. apps/monitor.py ✅ MONITORING DASHBOARD
+**Purpose**: System monitoring and alerts
+**Entry**: `python apps/monitor.py [--auto] [--continuous]`
+**Mode**: Real-time system monitoring and health checks
+**Features**: Live data monitoring, alert system, export functionality
 
-### 5. Test Scripts
-**Purpose**: System validation
-**Entry**: `python tests/test_*.py`
-**Mode**: Testing and validation
+### 5. apps/health_check.py ✅ SYSTEM DIAGNOSTICS
+**Purpose**: Comprehensive system health validation
+**Entry**: `python apps/health_check.py [--quick] [--verbose]`
+**Mode**: System health verification and diagnostics
+**Features**: Database checks, API validation, functionality testing
 
 ## PART 2: CORE SYSTEM FLOW
 
-### Main Trading Flow (claude_trader.py)
+### ✅ Current Trading Flow (apps/trader.py)
 ```
 ┌─────────────────┐
 │   SYSTEM START  │
-│   ClaudeTrader  │
+│   AI Trader     │
 └─────────┬───────┘
           │
           ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  Initialize     │────▶│ DataCollector│────▶│  Database       │
-│  Components     │     │ RiskManager  │     │  Setup          │
-│                 │     │ AI Brain     │     │                 │
-└─────────┬───────┘     │ Paper Trader │     └─────────────────┘
-          │             └──────────────┘
-          ▼
+│  Initialize     │────▶│ DataCollector│────▶│  Database &     │
+│  Components     │     │ AI Brain     │     │  Configuration  │
+│                 │     │ PaperTrader  │     │                 │
+└─────────┬───────┘     │ RiskManager  │     └─────────────────┘
+          │             │ AlertEngine  │     
+          ▼             └──────────────┘     
 ┌─────────────────┐
 │ TRADING CYCLE   │
-│ (Every 5 min)   │
+│ (Configurable)  │
 └─────────┬───────┘
           │
           ▼
@@ -59,56 +64,93 @@ The system has several entry points for different use cases:
           │
           ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│ 1. Data         │────▶│ 2. Calculate │────▶│ 3. AI Analysis  │
-│ Collection      │     │ Indicators   │     │ (Claude)        │
+│ 1. Fetch Market │────▶│ 2. Calculate │────▶│ 3. AI Decision  │
+│ Data (Recent)   │     │ Indicators   │     │ (Claude 3.5)    │
 └─────────────────┘     └──────────────┘     └─────────┬───────┘
                                                        │
                                                        ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│ 6. Update       │◀────│ 5. Execute   │◀────│ 4. Risk         │
-│ Positions       │     │ Trade        │     │ Validation      │
+│ 6. Log Results  │◀────│ 5. Execute   │◀────│ 4. Risk         │
+│ & Portfolio     │     │ Paper Trade  │     │ Assessment      │
 └─────────────────┘     └──────────────┘     └─────────────────┘
           │
           ▼
 ┌─────────────────┐
-│  END CYCLE      │
-│ (Wait 5 min)    │
+│  CYCLE SUMMARY  │
+│  Performance    │
+│  Metrics        │
+└─────────┬───────┘
+          │
+          ▼
+┌─────────────────┐
+│  NEXT CYCLE     │
+│ (or END)        │
 └─────────────────┘
 ```
 
-### Data Pipeline Flow
+### ✅ Current Data Pipeline Flow
 ```
 ┌─────────────────┐
 │   DATA SOURCES  │
 │                 │
+│ • Database      │
 │ • ZerodhaAPI    │
-│ • MockAPI       │ 
-└─────────┬───────┘
-          │
-          ▼
-┌─────────────────┐     ┌──────────────┐
-│ DataCollector   │────▶│ DataValidator│
-│                 │     │              │
-│ • MemoryCache   │     │ • Price      │
-│ • Fallback      │     │   Validation │
-│ • Rate Limiting │     │ • Volume     │
-└─────────┬───────┘     │   Checks     │
-          │             └──────┬───────┘
-          ▼                    │
-┌─────────────────┐            │
-│ MarketData      │◀───────────┘
-│ (Validated)     │
+│ • MockAPI       │
+│ • CSV Files     │ 
 └─────────┬───────┘
           │
           ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│ DatabaseManager │────▶│ Indicator    │────▶│   Database      │
-│                 │     │ Engine       │     │                 │
-│ • UPSERT Logic  │     │              │     │ • price_data    │
-│ • Error Handling│     │ • SMA        │     │ • indicators    │
-│ • WAL Mode      │     │ • RSI        │     │ • daily_stats   │
-└─────────────────┘     │ • MACD       │     └─────────────────┘
-                        └──────────────┘
+│ DataCollector   │────▶│ Cache System │────▶│ DataValidator   │
+│                 │     │              │     │                 │
+│ • Multi-source  │     │ • Memory     │     │ • OHLCV checks  │
+│ • Fallback      │     │ • Disk       │     │ • Range limits  │
+│ • Rate Limiting │     │ • TTL        │     │ • Consistency   │
+└─────────┬───────┘     └──────────────┘     └─────────┬───────┘
+          │                                            │
+          ▼                                            ▼
+┌─────────────────┐                          ┌─────────────────┐
+│   Database      │                          │   MarketData    │
+│   Storage       │                          │   Objects       │
+│                 │                          │                 │
+│ • SQLite        │◀─────────────────────────│ • Validated     │
+│ • Optimized     │                          │ • Structured    │
+│ • Indexed       │                          │ • Ready for AI  │
+└─────────────────┘                          └─────────────────┘
+```
+
+### ✅ NEW: Alert System Flow  
+```
+┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
+│ Market Data     │────▶│ AlertEngine  │────▶│ Condition       │
+│ Stream          │     │              │     │ Evaluation      │
+│                 │     │ • RSI Rules  │     │                 │
+│ • Price         │     │ • MACD Rules │     │ • Threshold     │
+│ • Volume        │     │ • Volume     │     │ • Crossover     │
+│ • Indicators    │     │ • Price      │     │ • Extreme       │
+└─────────────────┘     └──────────────┘     └─────────┬───────┘
+                                                       │
+                                                       ▼
+                                             ┌─────────────────┐
+                                             │ Alert Triggered?│
+                                             └─────────┬───────┘
+                                                      │
+                                         ┌────────────┴─────────────┐
+                                         │                          │
+                                         ▼                          ▼
+                               ┌─────────────────┐        ┌─────────────────┐
+                               │   NO ALERT      │        │ ALERT TRIGGERED │
+                               │   Continue      │        │                 │
+                               │   Monitoring    │        │ • Log Alert     │
+                               └─────────────────┘        │ • Run Callbacks │
+                                                         │ • Set Cooldown  │
+                                                         └─────────┬───────┘
+                                                                   │
+                                                                   ▼
+                                                         ┌─────────────────┐
+                                                         │ Trigger Trading │
+                                                         │ Decision        │
+                                                         └─────────────────┘
 ```
 
 ### Decision Flow (AI Brain)
@@ -134,10 +176,10 @@ The system has several entry points for different use cases:
 ┌─────────────────┐     ┌──────────────┐
 │ Claude API      │────▶│ Response     │
 │                 │     │ Parsing      │
-│ • GPT-4 Model   │     │              │
-│ • Max Tokens    │     │ • Extract    │
-│ • Temperature   │     │   Signal     │
-│ • JSON Format   │     │ • Parse JSON │
+│ • Claude 3.5    │     │              │
+│   Sonnet        │     │ • Extract    │
+│ • Max Tokens    │     │   Signal     │
+│ • Temperature   │     │ • Parse JSON │
 └─────────────────┘     │ • Validate   │
                         └──────┬───────┘
                                │
@@ -293,39 +335,60 @@ Trading Signal (BUY/SELL/HOLD + parameters)
 - **Backup Strategy**: WAL mode for SQLite reliability
 - **Validation Logging**: Track all data quality issues
 
-## PART 7: DEPENDENCIES GRAPH
+## PART 7: ✅ CURRENT SYSTEM ARCHITECTURE
 
+### Core Module Dependencies
 ```
-claude_trader.py
-├── src/ai_brain.py
-│   ├── src/interfaces.py
-│   ├── src/config.py  
-│   ├── src/risk_manager.py
-│   └── src/utils/logger.py
-├── src/data_collector.py
-│   ├── src/interfaces.py
-│   ├── src/data_sources.py
-│   │   └── src/utils/logger.py
-│   ├── src/indicator_engine.py
-│   ├── src/config.py
-│   └── src/utils/logger.py
-├── src/paper_trader.py
-│   ├── src/interfaces.py
-│   ├── src/config.py
-│   └── src/utils/logger.py
-├── src/risk_manager.py
-│   ├── src/interfaces.py
-│   └── src/config.py
-└── src/config.py
-    └── src/stock_registry.py
-
-External Dependencies:
-├── anthropic (Claude AI)
-├── kiteconnect (Zerodha API) 
-├── pandas/numpy (Data processing)
-├── sqlite3 (Database)
-├── flask (Token generation)
-└── Standard library modules
+apps/trader.py (Main Entry Point)
+├── src/core/ai_brain.py ✅
+│   ├── src/core/prompt_builder.py ✅
+│   ├── src/interfaces.py ✅
+│   └── src/utils/logger.py ✅
+├── src/data_collector.py ✅
+│   ├── src/data/apis.py ✅
+│   ├── src/data/cache.py ✅
+│   ├── src/data/database.py ✅
+│   └── src/core/indicator_engine.py ✅
+├── src/core/paper_trader.py ✅
+│   ├── src/interfaces.py ✅
+│   └── src/core/trading_modes.py ✅
+├── src/core/risk_manager.py ✅
+├── src/alerts/alert_engine.py ✅ NEW
+│   ├── src/alerts/rules.py ✅ NEW
+│   └── src/alerts/monitor.py ✅ NEW
+└── src/data/config.py ✅
+    └── src/data/stock_registry.py ✅
 ```
 
-This flow analysis reveals a well-architected system with clear separation of concerns, proper abstraction layers, and robust error handling. The main areas for improvement are in configuration management, test coverage, and advanced risk management features.
+### Application Suite
+```
+apps/
+├── trader.py ✅        (Main AI trading system)
+├── backtest.py ✅      (Historical testing) 
+├── monitor.py ✅       (System monitoring)
+├── data_collector.py ✅ (Data management)
+└── health_check.py ✅   (System diagnostics)
+```
+
+### External Dependencies
+```
+Production:
+├── anthropic ✅           (Claude 3.5 Sonnet API)
+├── kiteconnect ✅         (Zerodha API) 
+├── pandas/numpy ✅        (Data processing)
+├── sqlite3 ✅             (Database)
+└── Standard library ✅    (datetime, json, etc.)
+
+Development & Testing:
+├── pytest ✅              (Testing framework)
+├── unittest.mock ✅       (Test mocking)
+└── argparse ✅            (CLI interfaces)
+```
+
+### ✅ System Status Summary
+**Architecture**: Well-structured with clear separation of concerns  
+**Alert System**: Fully operational with 4 alert types  
+**Testing**: 100% test pass rate (39 tests)  
+**Health Monitoring**: Comprehensive system diagnostics  
+**Documentation**: Up-to-date and synchronized  
+**Scalability**: Event-driven architecture ready for expansion

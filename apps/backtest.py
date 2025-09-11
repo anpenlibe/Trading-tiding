@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import sqlite3
+import argparse
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -233,7 +234,7 @@ class HistoricalSimulator:
         try:
             if self.config.enable_ai_brain:
                 # FIXED: Use correct ClaudeAI import
-                from src.ai_brain import ClaudeAI
+                from src.core.ai_brain import ClaudeAI
                 self.ai_brain = ClaudeAI()
                 logger.info("AI Brain (ClaudeAI) initialized for simulation")
         except ImportError as e:
@@ -243,7 +244,7 @@ class HistoricalSimulator:
         try:
             # FIXED: Add risk manager integration
             if self.config.enable_ai_brain:  # Only need risk manager if using AI
-                from src.risk_manager import SimpleRiskManager
+                from src.core.risk_manager import SimpleRiskManager
                 self.risk_manager = SimpleRiskManager()
                 logger.info("Risk Manager initialized for simulation")
         except ImportError as e:
@@ -251,7 +252,7 @@ class HistoricalSimulator:
         
         try:
             if self.config.enable_paper_trading:
-                from src.paper_trader import PaperTrader
+                from src.core.paper_trader import PaperTrader
                 self.paper_trader = PaperTrader(initial_capital=self.config.initial_capital)
                 logger.info("Paper Trader initialized for simulation")
         except ImportError as e:
@@ -512,12 +513,22 @@ def create_default_config() -> SimulationConfig:
 
 def main():
     """Main function for running historical simulation"""
+    parser = argparse.ArgumentParser(description='Historical trading simulation')
+    parser.add_argument('--auto', action='store_true', help='Run in automated mode with defaults')
+    parser.add_argument('--days', type=int, default=3, help='Number of days to simulate (default: 3)')
+    parser.add_argument('--symbols', nargs='+', help='Symbols to simulate (default: all configured)')
+    parser.add_argument('--speed', type=float, default=5.0, help='Simulation speed multiplier (default: 5.0)')
+    args = parser.parse_args()
+    
     print("🕰️  HISTORICAL DATA SIMULATION")
     print("="*60)
     
+    # Use specified symbols or default to all configured
+    symbols = args.symbols if args.symbols else SYMBOLS
+    
     # Check available data
     provider = HistoricalDataProvider(DB_PATH)
-    start_date, end_date = provider.get_data_range(SYMBOLS)
+    start_date, end_date = provider.get_data_range(symbols)
     provider.close()
     
     if not start_date:
@@ -525,23 +536,30 @@ def main():
         return
     
     print(f"📊 Available data: {start_date} to {end_date}")
-    print(f"📈 Symbols: {', '.join(SYMBOLS)}")
+    print(f"📈 Symbols: {', '.join(symbols)}")
     
-    # Get user input for simulation period
-    print("\nSimulation options:")
-    print("1. Last 3 days (recommended)")
-    print("2. Last week")
-    print("3. Last month")
-    print("4. Custom date range")
-    print("5. Use all available data")
-    
-    choice = input("\nChoice (1-5): ").strip()
+    if args.auto:
+        # Automated mode - use command line args
+        choice = "1"  # Default to last N days
+        print(f"\n🤖 Automated mode: Simulating last {args.days} days")
+    else:
+        # Interactive mode
+        print("\nSimulation options:")
+        print("1. Last 3 days (recommended)")
+        print("2. Last week")
+        print("3. Last month")
+        print("4. Custom date range")
+        print("5. Use all available data")
+        
+        choice = input("\nChoice (1-5): ").strip()
     
     config = create_default_config()
+    config.symbols = symbols  # Use the selected symbols
     
     if choice == "1":
-        config.start_date = (datetime.now() - timedelta(days=3)).strftime('%Y-%m-%d')
-        config.speed_multiplier = 5.0
+        days_to_simulate = args.days if args.auto else 3
+        config.start_date = (datetime.now() - timedelta(days=days_to_simulate)).strftime('%Y-%m-%d')
+        config.speed_multiplier = args.speed if args.auto else 5.0
     elif choice == "2":
         config.start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
         config.speed_multiplier = 10.0
@@ -549,9 +567,15 @@ def main():
         config.start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
         config.speed_multiplier = 50.0
     elif choice == "4":
-        config.start_date = input(f"Start date (YYYY-MM-DD, earliest: {start_date}): ").strip()
-        config.end_date = input(f"End date (YYYY-MM-DD, latest: {end_date}): ").strip()
-        config.speed_multiplier = float(input("Speed multiplier (1.0 = real time, 10.0 = 10x faster): ") or "10.0")
+        if args.auto:
+            # Use reasonable defaults for automated mode
+            config.start_date = (datetime.now() - timedelta(days=args.days)).strftime('%Y-%m-%d')
+            config.end_date = datetime.now().strftime('%Y-%m-%d')
+            config.speed_multiplier = args.speed
+        else:
+            config.start_date = input(f"Start date (YYYY-MM-DD, earliest: {start_date}): ").strip()
+            config.end_date = input(f"End date (YYYY-MM-DD, latest: {end_date}): ").strip()
+            config.speed_multiplier = float(input("Speed multiplier (1.0 = real time, 10.0 = 10x faster): ") or "10.0")
     elif choice == "5":
         config.start_date = start_date
         config.end_date = end_date
@@ -559,23 +583,34 @@ def main():
     else:
         print("Invalid choice, using default (last 3 days)")
     
-    # Ask about components
-    if input(f"\nEnable AI Brain? (y/n) [y]: ").strip().lower() != 'n':
+    # Configure components
+    if args.auto:
+        # Automated mode - use defaults
         config.enable_ai_brain = True
-    else:
-        config.enable_ai_brain = False
-    
-    if input(f"Enable Paper Trading? (y/n) [y]: ").strip().lower() != 'n':
         config.enable_paper_trading = True
+        print(f"\n🤖 Automated configuration: AI enabled, Paper trading enabled")
     else:
-        config.enable_paper_trading = False
+        # Interactive mode
+        if input(f"\nEnable AI Brain? (y/n) [y]: ").strip().lower() != 'n':
+            config.enable_ai_brain = True
+        else:
+            config.enable_ai_brain = False
+        
+        if input(f"Enable Paper Trading? (y/n) [y]: ").strip().lower() != 'n':
+            config.enable_paper_trading = True
+        else:
+            config.enable_paper_trading = False
     
     print(f"\n🚀 Starting simulation from {config.start_date} to {config.end_date}")
     print(f"⚡ Speed: {config.speed_multiplier}x")
     print(f"🧠 AI Brain: {'✅' if config.enable_ai_brain else '❌'}")
     print(f"💰 Paper Trading: {'✅' if config.enable_paper_trading else '❌'}")
     print("\nPress Ctrl+C to stop the simulation at any time")
-    input("Press Enter to start...")
+    
+    if not args.auto:
+        input("Press Enter to start...")
+    else:
+        print("🚀 Starting automated simulation...")
     
     # Run simulation
     simulator = HistoricalSimulator(config)

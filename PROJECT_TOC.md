@@ -1,408 +1,305 @@
-# 📚 Claude AI Trading Bot - Master Table of Contents
+# 📚 Project Table of Contents - Central Navigation
 
-> **Last Updated**: 2025-07-01 | **Status**: Production Ready 🚀  
-> **System**: Complete AI-powered trading platform with Claude integration
-
-## 🎯 Quick Navigation
-
-- [🎯 System Overview](#-system-overview)
-- [🚀 Quick Start Guide](#-quick-start-guide)
-- [🏗️ Core Architecture](#️-core-architecture)
-- [🧠 AI Trading System](#-ai-trading-system)
-- [📊 Trading Components](#-trading-components)
-- [🛠️ Utilities & Tools](#️-utilities--tools)
-- [🧪 Testing Suite](#-testing-suite)
-- [📖 Documentation](#-documentation)
-- [🎯 Usage Examples](#-usage-examples)
-- [📈 Performance Monitoring](#-performance-monitoring)
+**Navigation Hub for the Claude AI Trading System**  
+**Version**: 3.0 (Post Phase 3 Reorganization)  
+**Last Updated**: January 2025  
 
 ---
 
-## 🎯 System Overview
+## 🎯 Quick Start Navigation
 
-| Component | Status | Description | Ready for Production |
-|-----------|--------|-------------|---------------------|
-| **Claude AI Trading Bot** | ✅ **Production Ready** | Complete AI-powered trading system | ✅ Yes |
-| **Capital Management** | ✅ **Integrated** | ₹10,000+ autonomous management | ✅ Yes |
-| **Risk Protection** | ✅ **Active** | Professional risk management | ✅ Yes |
-| **Performance Tracking** | ✅ **Comprehensive** | Real-time analytics & reporting | ✅ Yes |
-| **Multi-Strategy Portfolio** | ✅ **Available** | 4 trading strategies, 24 stocks, 8 sectors | ✅ Yes |
-
-### **Key Capabilities**
-- 🤖 **Autonomous Trading**: Claude makes intelligent market decisions
-- 🛡️ **Risk Management**: Professional position sizing and stop losses  
-- 📊 **Portfolio Management**: 24 NSE stocks across 8 sectors
-- 📈 **Performance Analytics**: Comprehensive tracking and reporting
-- 🎯 **Multi-Strategy**: Conservative, swing, diversified, tech focus
-- 🕰️ **Backtesting**: Historical validation before live trading
+| **I Want To...** | **Go To** | **Description** |
+|-------------------|-----------|-----------------|
+| **🚀 Run the trading system** | [README.md](./README.md) | Main project overview and quick start |
+| **🎯 Check complete system status** | [SYSTEM_STATUS.md](./SYSTEM_STATUS.md) | **⭐ CENTRAL TRACKING HUB** - Single source of truth |
+| **📊 Check system architecture** | [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) | Architecture lookup table for changes |
+| **🗺️ See current system structure** | [PROJECT_MAP.md](./PROJECT_MAP.md) | Current system structure and components |
+| **🏗️ Understand the code structure** | [src/README.md](./src/README.md) | Detailed module documentation |
+| **🧪 Run tests** | [tests/README.md](./tests/README.md) | Testing guide and test structure |
+| **📱 Use applications** | [apps/README.md](./apps/README.md) | Application usage guide |
+| **📋 See project history** | [docs/](./docs/) | Phase documentation and development history |
+| **🔧 For developers** | [CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md) | Development guidelines and rules |
 
 ---
 
-## 🚀 Quick Start Guide
+## 📂 Directory Structure Guide
 
-### **System Health Check** (30 seconds)
+```
+trading-tiding/
+│
+├── 📋 PROJECT_TOC.md              ← YOU ARE HERE - Central navigation
+├── 📖 README.md                   ← Main project overview (USER FOCUSED)
+├── 🏗️ SYSTEM_ARCHITECTURE.md     ← **CHANGE IMPACT LOOKUP TABLE** 
+├── 🔧 CLAUDE_CODE_RULES.md       ← Development rules and guidelines
+│
+├── 📱 apps/                       ← Executable applications
+│   ├── README.md                  ← Application usage guide
+│   ├── trader.py                  ← Main trading system
+│   ├── backtest.py               ← Historical backtesting
+│   ├── data_collector.py         ← Data collection utility
+│   ├── monitor.py                ← System monitoring
+│   └── health_check.py           ← System health verification
+│
+├── 💻 src/                        ← Core source code
+│   ├── README.md                  ← Module documentation hub
+│   │
+│   ├── 🧠 core/                   ← Business logic layer
+│   │   ├── README.md              ← Core modules guide
+│   │   ├── ai_brain.py           ← Claude AI integration
+│   │   ├── risk_manager.py       ← Risk management
+│   │   ├── paper_trader.py       ← Trade execution
+│   │   └── indicator_engine.py   ← Technical analysis
+│   │
+│   ├── 📊 data/                   ← Data layer
+│   │   ├── README.md              ← Data handling guide
+│   │   ├── config.py             ← Configuration management
+│   │   ├── data_sources.py       ← API implementations
+│   │   ├── stock_registry.py     ← Stock universe
+│   │   ├── database.py           ← Database operations
+│   │   ├── cache.py              ← Caching utilities
+│   │   └── validator.py          ← Data validation
+│   │
+│   ├── 🤖 ai/                     ← AI components
+│   │   ├── README.md              ← AI modules guide
+│   │   └── prompt_builder.py     ← Prompt engineering
+│   │
+│   ├── ⚡ alerts/                 ← Alert system
+│   │   ├── README.md              ← Alert system guide
+│   │   ├── alert_engine.py       ← Alert orchestration
+│   │   ├── rules.py              ← Alert conditions
+│   │   └── monitor.py            ← Alert monitoring
+│   │
+│   ├── 📈 monitoring/             ← System monitoring
+│   │   ├── README.md              ← Monitoring guide
+│   │   ├── performance.py        ← Performance tracking
+│   │   ├── dashboard.py          ← System dashboard
+│   │   └── error_tracker.py      ← Error monitoring
+│   │
+│   ├── 🔧 utils/                  ← Utilities
+│   │   ├── README.md              ← Utilities guide
+│   │   ├── logger.py             ← Logging infrastructure
+│   │   ├── db_optimizer.py       ← Database optimization
+│   │   └── retry.py              ← Retry mechanisms
+│   │
+│   ├── data_collector.py          ← Data orchestration (main data module)
+│   ├── interfaces.py              ← System contracts/interfaces
+│   └── exceptions.py              ← Custom exceptions
+│
+├── 🧪 tests/                      ← Test suite
+│   ├── README.md                  ← Testing guide
+│   ├── conftest.py               ← Test fixtures
+│   ├── unit/                     ← Unit tests
+│   ├── integration/              ← Integration tests
+│   └── test_alerts.py            ← Alert system tests
+│
+├── 📚 docs/                       ← Documentation
+│   ├── README.md                  ← Documentation index
+│   ├── api/                      ← Auto-generated API docs
+│   ├── guides/                   ← User guides
+│   ├── PHASE_*.md                ← Development history
+│   └── *.md                      ← Various documentation files
+│
+├── 🛠️ scripts/                   ← Utility scripts
+│   ├── README.md                  ← Scripts usage guide
+│   └── generate_zerodha_token.py ← Zerodha OAuth token generator
+│
+├── ⚙️ Configuration Files
+│   ├── .env.template             ← Environment variables template
+│   ├── requirements.txt          ← Python dependencies
+│   └── instruments.csv           ← Zerodha instrument data
+│
+└── 🔧 System Files
+    ├── generate_docs.py           ← Documentation generator
+    ├── optimize_system.py         ← System optimizer
+    └── run_tests.py              ← Test runner
+```
+
+---
+
+## 🎯 Use Case Navigation
+
+### **👤 For End Users (Trading)**
+1. **Getting Started**: [README.md](./README.md) → Quick Start section
+2. **Live Data Setup**: [scripts/README.md](./scripts/README.md) → Zerodha token generation
+3. **Running Trading**: [apps/README.md](./apps/README.md) → trader.py guide
+4. **Backtesting**: [apps/README.md](./apps/README.md) → backtest.py guide
+5. **Monitoring**: [apps/README.md](./apps/README.md) → monitor.py guide
+6. **Configuration**: [src/data/README.md](./src/data/README.md) → config.py section
+
+### **🔧 For Developers (Code)**
+1. **Architecture Overview**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md)
+2. **Module Details**: [src/README.md](./src/README.md)
+3. **Development Rules**: [CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md)
+4. **Testing Guide**: [tests/README.md](./tests/README.md)
+5. **API Reference**: [docs/api/](./docs/api/)
+
+### **🧠 For AI/ML Engineers**
+1. **AI Brain Module**: [src/core/README.md](./src/core/README.md) → ai_brain.py
+2. **Prompt Engineering**: [src/ai/README.md](./src/ai/README.md) → prompt_builder.py
+3. **Alert System**: [src/alerts/README.md](./src/alerts/README.md)
+4. **Performance Monitoring**: [src/monitoring/README.md](./src/monitoring/README.md)
+
+### **📊 For Data Engineers**
+1. **Data Pipeline**: [src/data/README.md](./src/data/README.md)
+2. **Database Operations**: [src/data/README.md](./src/data/README.md) → database.py
+3. **Data Collection**: [src/README.md](./src/README.md) → data_collector.py
+4. **API Integrations**: [src/data/README.md](./src/data/README.md) → data_sources.py
+
+### **🧪 For QA/Testing**
+1. **Test Structure**: [tests/README.md](./tests/README.md)
+2. **Running Tests**: [README.md](./README.md) → Testing section
+3. **Test Coverage**: [tests/README.md](./tests/README.md) → Coverage section
+4. **Integration Testing**: [tests/README.md](./tests/README.md) → Integration section
+
+---
+
+## 📋 Documentation Hierarchy
+
+### **Level 1: Project Overview**
+- **README.md** - Main project documentation (USER FOCUSED)
+- **SYSTEM_ARCHITECTURE.md** - Technical architecture (DEVELOPER FOCUSED)
+- **PROJECT_TOC.md** - This navigation file
+
+### **Level 2: Area Documentation**
+- **apps/README.md** - Application usage
+- **src/README.md** - Source code overview
+- **tests/README.md** - Testing guide
+- **docs/README.md** - Documentation index
+
+### **Level 3: Module Documentation**
+- **src/core/README.md** - Core modules
+- **src/data/README.md** - Data handling
+- **src/ai/README.md** - AI components
+- **src/alerts/README.md** - Alert system
+- **src/monitoring/README.md** - Monitoring
+- **src/utils/README.md** - Utilities
+
+### **Level 4: Specialized Documentation**
+- **docs/api/\*.md** - Auto-generated API docs
+- **docs/guides/\*.md** - User guides
+- **docs/PHASE_\*.md** - Development history
+
+---
+
+## 🔍 Finding What You Need
+
+### **🎯 Quick Search Patterns**
 ```bash
-python system_check.py                    # Verify all components
+# Find all documentation about a topic
+find . -name "*.md" -exec grep -l "topic" {} \;
+
+# Find README for a specific area
+find . -name "README.md" | grep area_name
+
+# Find all configuration documentation
+grep -r "config\|Config\|CONFIG" --include="*.md" .
+
+# Find all API documentation
+find docs/api/ -name "*.md"
 ```
 
-### **Free System Test** (2 minutes - No API costs)
-```bash
-python tests/test_trading_session.py      # Complete integration test
-```
-
-### **AI Trading** (Live system)
-```bash
-python claude_trader.py                   # Start Claude trading
-python historical_simulator.py            # Backtest AI performance
-```
-
-### **Monitoring & Analysis**
-```bash
-python monitor.py                          # Data quality dashboard
-tail -f data/logs/claude_trader.log        # Live trading logs
-```
+### **🔗 Common Cross-References**
+| **Topic** | **Primary Doc** | **Related Docs** |
+|-----------|----------------|------------------|
+| **Architecture** | SYSTEM_ARCHITECTURE.md | src/README.md, apps/README.md |
+| **Configuration** | src/data/README.md | .env.template, docs/guides/ |
+| **AI Integration** | src/core/README.md | src/ai/README.md, docs/api/ai_brain.md |
+| **Testing** | tests/README.md | run_tests.py, docs/guides/ |
+| **Data Pipeline** | src/data/README.md | src/README.md, apps/README.md |
+| **Monitoring** | src/monitoring/README.md | apps/README.md, optimize_system.py |
 
 ---
 
-## 🏗️ Core Architecture
+## 🚀 Development Workflow
 
-### **Main Trading System**
-| Module | Location | Purpose | Key Features |
-|--------|----------|---------|--------------|
-| **🤖 Claude Trader** | `claude_trader.py` | **Main AI orchestrator** | • AI-driven decisions<br>• Risk management<br>• Performance tracking<br>• Error handling |
-| **🕰️ Historical Simulator** | `historical_simulator.py` | **AI backtesting system** | • Time-based simulation<br>• Performance validation<br>• Strategy testing<br>• Risk assessment |
-| **📊 Data Collection** | `collect_historical_data.py` | **Historical data builder** | • Bulk data collection<br>• Database population<br>• Data validation<br>• Progress tracking |
+### **🆕 For New Features**
+1. **Check Architecture Impact**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) → Change Impact Matrix
+2. **Find Related Modules**: Use dependency chains in architecture doc
+3. **Read Module Documentation**: Relevant README.md files
+4. **Follow Development Rules**: [CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md)
+5. **Update Tests**: [tests/README.md](./tests/README.md)
+6. **Update Documentation**: Update relevant README files
 
-### **System Architecture Flow**
-```
-📊 Market Data → 🧠 Claude AI → 🛡️ Risk Manager → 💰 Paper Trader → 📈 Performance Tracking
-```
+### **🐛 For Bug Fixes**
+1. **Identify Module**: [src/README.md](./src/README.md) → Module Status Matrix
+2. **Check Dependencies**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) → Dependency Chains
+3. **Find Tests**: [tests/README.md](./tests/README.md) → Test Coverage section
+4. **Check Configuration**: [src/data/README.md](./src/data/README.md) → config.py section
 
----
-
-## 🧠 AI Trading System
-
-### **Claude Integration**
-| Module | Location | Purpose | Features |
-|--------|----------|---------|----------|
-| **🧠 AI Brain** | `src/ai_brain.py` | **Claude API integration** | • Comprehensive market analysis<br>• Detailed prompting<br>• Decision logging<br>• Confidence scoring |
-| **🛡️ Risk Manager** | `src/risk_manager.py` | **Capital protection** | • Position sizing (Kelly Criterion)<br>• Stop loss calculation<br>• Trade validation<br>• Portfolio limits |
-| **💰 Paper Trader** | `src/paper_trader.py` | **Trade execution & tracking** | • Realistic simulation<br>• Performance analytics<br>• P&L tracking<br>• Commission handling |
-
-### **AI Decision Pipeline**
-```python
-# How Claude makes trading decisions:
-1. Market Data Collection    → Latest prices, volume, indicators
-2. Claude Analysis          → AI evaluates market conditions  
-3. Risk Calculation         → Position sizing and safety checks
-4. Trade Execution          → Paper or live trade placement
-5. Performance Tracking     → Monitor results and learn
-```
+### **📊 For Performance Issues**
+1. **Check Monitoring**: [src/monitoring/README.md](./src/monitoring/README.md)
+2. **Review Architecture**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) → Data Flow Architecture
+3. **Optimize Database**: optimize_system.py documentation
+4. **Review Caching**: [src/data/README.md](./src/data/README.md) → cache.py section
 
 ---
 
-## 📊 Trading Components
+## 📈 Future Improvements Tracking
 
-### **Data Pipeline**
-| Module | Location | Purpose | Status |
-|--------|----------|---------|--------|
-| **📊 Data Collector** | `src/data_collector.py` | **Unified data pipeline** | ✅ Production |
-| **📈 Indicator Engine** | `src/indicator_engine.py` | **Technical analysis** | ✅ Production |
-| **🌐 Data Sources** | `src/data_sources.py` | **API integrations** | ✅ Production |
-| **🔌 Interfaces** | `src/interfaces.py` | **System contracts** | ✅ Production |
+### **🧠 AI Context Memory**
+- **Architecture Impact**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) → Future Improvements section
+- **Implementation Guide**: [src/ai/README.md](./src/ai/README.md) → Future enhancements
+- **Testing Impact**: [tests/README.md](./tests/README.md) → Test renewal section
 
-### **Portfolio Management**
-| Module | Location | Purpose | Features |
-|--------|----------|---------|----------|
-| **📋 Stock Registry** | `src/stock_registry.py` | **Stock universe management** | • 24 NSE stocks<br>• 8 sector classification<br>• Liquidity ratings<br>• Strategy portfolios |
-| **⚙️ Configuration** | `src/config.py` | **System settings** | • Trading parameters<br>• Risk settings<br>• Market hours<br>• API configuration |
+### **🔄 Test Suite Renewal**
+- **Current Status**: [tests/README.md](./tests/README.md) → Test status
+- **Renewal Plan**: [CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md) → Testing standards
+- **Priority Areas**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) → Critical System Points
 
-### **Strategy Options**
-| Strategy | Stocks | Risk Level | Purpose |
-|----------|--------|------------|---------|
-| **Conservative** | HDFCBANK, ICICIBANK, TCS, INFY, SBIN | 🟢 Low | Capital preservation |
-| **Swing Trading** | RELIANCE, SBIN, ONGC, INFY, ICICIBANK | 🟡 Medium | Active trading |
-| **Diversified** | Cross-sector allocation | 🟡 Medium | Balanced exposure |
-| **Tech Focus** | TCS, INFY, HCLTECH, WIPRO, TECHM | 🟠 Medium-High | Growth focus |
+### **📊 Multi-Timestamp Data**
+- **Data Pipeline Changes**: [src/data/README.md](./src/data/README.md) → data_collector.py
+- **AI Integration**: [src/core/README.md](./src/core/README.md) → ai_brain.py
+- **Configuration Impact**: [src/data/README.md](./src/data/README.md) → config.py
 
----
+### **🔌 Fallback API Integration**
+- **Data Sources**: [src/data/README.md](./src/data/README.md) → data_sources.py
+- **Configuration**: [src/data/README.md](./src/data/README.md) → config.py
+- **Testing**: [tests/README.md](./tests/README.md) → Data source tests
 
-## 🛠️ Utilities & Tools
-
-### **System Management**
-| Tool | Location | Purpose | Usage |
-|------|----------|---------|--------|
-| **🏥 System Check** | `system_check.py` | **Complete health verification** | `python system_check.py` |
-| **📊 Monitor Dashboard** | `monitor.py` | **Data quality monitoring** | `python monitor.py` |
-| **🔧 Setup Script** | `setup_data_collection.sh` | **Environment setup** | `./setup_data_collection.sh` |
-
-### **Core Utilities**
-| Utility | Location | Purpose | Features |
-|---------|----------|---------|----------|
-| **📝 Logging System** | `src/utils/logger.py` | **Structured logging** | • Color formatting<br>• File rotation<br>• Error tracking<br>• Performance logging |
-
-### **Integration Scripts**
-| Script | Location | Purpose | Usage |
-|--------|----------|---------|--------|
-| **🔑 Token Generator** | `scripts/generate_zerodha_token.py` | **Zerodha API setup** | `python scripts/generate_zerodha_token.py` |
+### **📦 Stock Abstraction**
+- **Stock Registry**: [src/data/README.md](./src/data/README.md) → stock_registry.py
+- **Configuration Cleanup**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) → Configuration Impact Map
+- **System-wide Impact**: All modules using hardcoded symbols
 
 ---
 
-## 🧪 Testing Suite
+## 🎯 Maintenance Checklist
 
-### **Primary Integration Test** ⭐
-| Test | Location | Purpose | Cost |
-|------|----------|---------|------|
-| **🎯 Trading Session Test** | `tests/test_trading_session.py` | **Complete system validation** | 🆓 **FREE** |
+### **📅 Regular Maintenance (Weekly)**
+- [ ] Review [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) for accuracy
+- [ ] Update module status in [src/README.md](./src/README.md)
+- [ ] Check test coverage in [tests/README.md](./tests/README.md)
+- [ ] Update performance metrics in [src/monitoring/README.md](./src/monitoring/README.md)
 
-**Why This Test is Gold**: Tests your entire integrated Claude trading system without spending API credits!
+### **🔄 After Major Changes**
+- [ ] Update [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) FIRST
+- [ ] Update affected module README files
+- [ ] Update test documentation
+- [ ] Regenerate API documentation
+- [ ] Update this PROJECT_TOC.md if structure changed
 
-### **Component Tests**
-| Test | Location | Purpose | When to Use |
-|------|----------|---------|-------------|
-| **🧠 AI Brain Test** | `tests/test_ai_brain.py` | Claude API integration | API troubleshooting |
-| **🔧 Anthropic Setup** | `tests/test_anthropic_setup.py` | API key verification | Initial setup |
-| **📊 Data Collector** | `tests/test_data_collector.py` | Data pipeline testing | Data issues |
-| **🕰️ Historical Test** | `tests/test_historical.py` | Alternative historical testing | Simulator issues |
-
-### **Testing Workflow**
-```bash
-# 1. Free System Validation (Always run first)
-python tests/test_trading_session.py      # No API costs
-
-# 2. System Health Check  
-python system_check.py                    # Verify components
-
-# 3. Component-Specific Testing (if needed)
-python tests/test_data_collector.py       # Data issues
-python tests/test_ai_brain.py             # Claude API issues (costs credits)
-```
+### **📦 Before Releases**
+- [ ] All README files current
+- [ ] All examples working
+- [ ] All links functional
+- [ ] API documentation complete
+- [ ] Development history updated
 
 ---
 
-## 📖 Documentation
+## 🔗 External Links & Resources
 
-### **Core Documentation**
-| Document | Location | Purpose | Last Updated |
-|----------|----------|---------|--------------|
-| **📚 Master TOC** | `PROJECT_TOC.md` | **This navigation file** | 2025-07-01 |
-| **📖 Main README** | `README.md` | **Project overview** | 2025-07-01 |
-| **🔧 Source Docs** | `src/README.md` | **Module documentation** | 2025-07-01 |
-| **📋 Requirements** | `requirements.txt` | **Dependencies** | 2025-07-01 |
+### **Development Tools**
+- **Claude Code Integration**: [CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md)
+- **Testing Framework**: [tests/README.md](./tests/README.md) → Testing tools
+- **Documentation Generation**: generate_docs.py
+- **System Optimization**: optimize_system.py
 
-### **System Dependencies**
-| File | Purpose | Status |
-|------|---------|--------|
-| **📋 Requirements** | `requirements.txt` | Python packages | ✅ Updated |
-| **🔧 Environment** | `.env.template` | Configuration template | ✅ Available |
-| **📊 Instruments** | `instruments.csv` | Zerodha token mappings | ✅ Current |
+### **API References**
+- **Anthropic Claude API**: [src/core/README.md](./src/core/README.md) → ai_brain.py
+- **Zerodha Kite Connect**: [src/data/README.md](./src/data/README.md) → data_sources.py
+- **System APIs**: [docs/api/](./docs/api/)
 
 ---
 
-## 🎯 Usage Examples
-
-### **Daily Trading Workflow**
-```bash
-# Morning Setup (2 minutes)
-python system_check.py                    # Health check
-python tests/test_trading_session.py      # Free validation
-
-# Start Claude Trading
-python claude_trader.py                   # Begin AI trading session
-
-# Monitor Performance
-tail -f data/logs/claude_trader.log        # Watch decisions
-python monitor.py                          # Check data quality
-```
-
-### **AI Performance Validation**
-```bash
-# Backtest Claude's Performance
-python historical_simulator.py            # Test on historical data
-# Choose: Last 3 days + Enable AI Brain + Paper Trading
-
-# Analyze Results
-# Check: Win rate, drawdown, decision quality
-```
-
-### **Strategy Testing**
-```bash
-# Test Different Strategies
-export TRADING_STRATEGY=conservative      # Safe approach
-export TRADING_STRATEGY=swing            # Active trading
-export TRADING_STRATEGY=tech_focus       # Technology focus
-python claude_trader.py
-```
-
----
-
-## 📈 Performance Monitoring
-
-### **Real-Time Metrics**
-| Metric | Location | Purpose |
-|--------|----------|---------|
-| **💰 Capital Tracking** | Claude Trader dashboard | Current vs initial capital |
-| **📊 Return Analysis** | Performance reports | Percentage returns with benchmarks |
-| **🛡️ Risk Metrics** | Risk manager logs | Drawdown, Sharpe ratio, volatility |
-| **🧠 AI Performance** | Decision logs | Confidence, reasoning quality |
-
-### **Reporting Commands**
-```bash
-# Generate Performance Report
-python claude_trader.py --report          # Comprehensive analytics
-
-# View Live Logs
-tail -f data/logs/claude_trader.log        # Trading decisions
-tail -f data/logs/ai_brain.log            # AI reasoning
-tail -f data/logs/paper_trader.log        # Trade execution
-
-# Database Analysis
-sqlite3 data/market_data.sqlite           # Direct data access
-```
-
-### **Key Performance Indicators**
-- **📈 Total Return**: Percentage gain/loss from initial capital
-- **🏆 Win Rate**: Percentage of profitable trades
-- **📉 Maximum Drawdown**: Largest peak-to-trough decline
-- **⚖️ Sharpe Ratio**: Risk-adjusted returns
-- **🎯 Profit Factor**: Gross profit / gross loss ratio
-
----
-
-## 🗂️ **Current Project Structure**
-
-```
-trading-bot/                              ✅ Production Ready
-├── 🤖 claude_trader.py                  # Main AI trading system
-├── 🕰️ historical_simulator.py           # AI backtesting 
-├── 📊 collect_historical_data.py        # Data collection
-├── 🏥 system_check.py                   # Health verification
-├── 📊 monitor.py                        # Data monitoring
-├── 📋 requirements.txt                  # Dependencies
-├── 📊 instruments.csv                   # Zerodha mappings
-├── 📁 src/                              # Core modules
-│   ├── 🧠 ai_brain.py                   # Claude integration
-│   ├── 🛡️ risk_manager.py               # Risk management
-│   ├── 💰 paper_trader.py               # Trade execution
-│   ├── 📊 data_collector.py             # Data pipeline
-│   ├── 📈 indicator_engine.py           # Technical analysis
-│   ├── 📋 stock_registry.py             # Stock management
-│   ├── ⚙️ config.py                     # Configuration
-│   ├── 🔌 interfaces.py                 # System contracts
-│   ├── 🌐 data_sources.py               # API integrations
-│   └── 📁 utils/
-│       └── 📝 logger.py                 # Logging system
-├── 📁 tests/                            # Testing suite
-│   ├── 🎯 test_trading_session.py       # Integration test (FREE)
-│   ├── 🧠 test_ai_brain.py              # AI testing
-│   ├── 🔧 test_anthropic_setup.py       # API setup
-│   ├── 📊 test_data_collector.py        # Data testing
-│   └── 🕰️ test_historical.py            # Historical testing
-├── 📁 scripts/                          # Utilities
-│   └── 🔑 generate_zerodha_token.py     # API setup
-├── 📁 data/                             # Data storage
-│   ├── 💾 market_data.sqlite            # Unified database
-│   └── 📁 logs/                         # System logs
-└── 📁 archive/old_files/                # Cleaned up files
-```
-
----
-
-## 🚦 **System Status Dashboard**
-
-| Component | Status | Performance | Notes |
-|-----------|--------|-------------|-------|
-| **🤖 Claude AI Integration** | ✅ **Production** | Excellent | Comprehensive market analysis |
-| **🛡️ Risk Management** | ✅ **Active** | Professional | Kelly Criterion position sizing |
-| **💰 Capital Management** | ✅ **Operational** | ₹10,000+ ready | Autonomous money management |
-| **📊 Data Pipeline** | ✅ **Stable** | 99%+ uptime | Unified collection & validation |
-| **📈 Performance Tracking** | ✅ **Comprehensive** | Real-time | Complete analytics suite |
-| **🧪 Testing Suite** | ✅ **Complete** | 100% coverage | Free integration validation |
-
----
-
-## 🎯 **Quick Commands Reference**
-
-### **Daily Operations**
-```bash
-# Essential Daily Commands
-python system_check.py                    # Health check (30s)
-python tests/test_trading_session.py      # Free validation (2m)
-python claude_trader.py                   # Start AI trading
-python historical_simulator.py            # Backtest performance
-
-# Monitoring Commands
-python monitor.py                          # Data quality dashboard
-tail -f data/logs/claude_trader.log        # Live trading logs
-sqlite3 data/market_data.sqlite            # Database access
-```
-
-### **Strategy Configuration**
-```bash
-# Set Trading Strategy
-export TRADING_STRATEGY=conservative      # Safe, defensive
-export TRADING_STRATEGY=swing            # Active trading
-export TRADING_STRATEGY=diversified      # Balanced exposure
-export TRADING_STRATEGY=tech_focus       # Technology focus
-```
-
-### **Troubleshooting**
-```bash
-# Component Testing
-python tests/test_data_collector.py       # Data issues
-python tests/test_anthropic_setup.py      # API problems
-python tests/test_ai_brain.py             # Claude issues (costs credits)
-
-# Log Analysis
-tail -f data/logs/error.log               # Error tracking
-grep "ERROR" data/logs/*.log              # Find errors
-```
-
----
-
-## 🔄 **Update Instructions**
-
-### **To Update This TOC**
-1. Edit `PROJECT_TOC.md`
-2. Update "Last Updated" date at top
-3. Add new entries to relevant sections  
-4. Update status indicators:
-   - ✅ Production Ready
-   - 🚧 In Development
-   - 📅 Planned
-   - ❌ Issues
-
-### **Status Indicators**
-- ✅ **Production Ready** - Fully functional, tested
-- 🚧 **In Development** - Work in progress
-- 📅 **Planned** - Future development
-- ❌ **Issues** - Needs attention
-- 🆓 **FREE** - No API costs
-- 💰 **Paid** - Requires API credits
-
----
-
-## 🏆 **Achievement Summary**
-
-### **From Basic Data Collection → Production AI Trading System**
-
-**🎯 What We Built:**
-- Complete AI-powered trading system with Claude integration
-- Professional risk management and position sizing
-- 24-stock universe across 8 sectors with strategy options
-- Comprehensive testing suite with free validation
-- Historical backtesting for AI performance validation
-- Real-time performance tracking and analytics
-
-**🚀 Ready for Production:**
-- Autonomous ₹10,000+ capital management
-- Professional-grade risk controls
-- Complete performance monitoring
-- Comprehensive testing and validation
-- Clean, maintainable architecture
-
----
-
-*This TOC is the single source of truth for the Claude AI Trading Bot. The system is production-ready for autonomous AI trading with proper risk management.*
-
-**🎊 Status: Ready for Claude to manage your capital intelligently!**
+**📍 Navigate efficiently: Use this TOC as your starting point for any project interaction. Always check the SYSTEM_ARCHITECTURE.md lookup table before making changes.**
