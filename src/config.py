@@ -131,12 +131,6 @@ STRATEGIES = {
         "entry_threshold": 0.015,
         "exit_threshold": 0.01,
         "min_volume_ratio": 0.8
-    },
-    "momentum": {
-        "enabled": False,
-        "lookback_period": 10,
-        "breakout_threshold": 0.025,
-        "volume_surge": 1.5
     }
 }
 
@@ -153,9 +147,64 @@ PAPER_TRADE_SLIPPAGE   = 0.0005
 MIN_TRADES_FOR_ANALYSIS   = 15
 PERFORMANCE_REPORT_INTERVAL = "daily"
 
-# Alert Settings
+# ============= DATA VALIDATION CONFIGURATION =============
+# Data quality thresholds
+VALIDATION_MAX_PRICE_CHANGE = float(os.getenv('VALIDATION_MAX_PRICE_CHANGE', '0.20'))  # 20% circuit breaker
+VALIDATION_MIN_VOLUME = int(os.getenv('VALIDATION_MIN_VOLUME', '100'))
+
+# ============= CACHE CONFIGURATION =============
+# Performance optimization
+CACHE_TTL_SECONDS = int(os.getenv('CACHE_TTL_SECONDS', '300'))  # 5 minutes
+
+# ============= TECHNICAL INDICATOR CONFIGURATION =============
+# Moving averages
+SMA_PERIODS = [20, 50, 200]  # Short, medium, long term
+VOLUME_SMA_PERIOD = int(os.getenv('VOLUME_SMA_PERIOD', '20'))
+
+# RSI settings
+RSI_PERIOD = int(os.getenv('RSI_PERIOD', '14'))
+RSI_OVERBOUGHT = float(os.getenv('RSI_OVERBOUGHT', '70'))
+RSI_OVERSOLD = float(os.getenv('RSI_OVERSOLD', '30'))
+
+# MACD settings  
+MACD_FAST = int(os.getenv('MACD_FAST', '12'))
+MACD_SLOW = int(os.getenv('MACD_SLOW', '26'))
+MACD_SIGNAL = int(os.getenv('MACD_SIGNAL', '9'))
+
+# ============= DATA COLLECTION CONFIGURATION =============
+# Data retrieval settings
+DEFAULT_PERIODS = int(os.getenv('DEFAULT_PERIODS', '200'))
+MIN_DATA_FOR_INDICATORS = int(os.getenv('MIN_DATA_FOR_INDICATORS', '20'))
+RECENT_DATA_LOOKBACK = int(os.getenv('RECENT_DATA_LOOKBACK', '20'))
+
+# ============= AI BRAIN CONFIGURATION =============
+# Decision making settings
+MAX_DECISION_HISTORY = int(os.getenv('MAX_DECISION_HISTORY', '100'))
+
+# ============= SIMULATION CONFIGURATION =============
+# Backtesting and simulation settings
+SIMULATION_PERIODS = int(os.getenv('SIMULATION_PERIODS', '50'))
+SIMULATION_BASE_PRICE = float(os.getenv('SIMULATION_BASE_PRICE', '2850'))
+
+# ============= DATA SOURCE CONFIGURATION =============
+# Mock data generation
+MOCK_VOLUME_RANGE_MIN = int(os.getenv('MOCK_VOLUME_RANGE_MIN', '100000'))
+MOCK_VOLUME_RANGE_MAX = int(os.getenv('MOCK_VOLUME_RANGE_MAX', '1000000'))
+
+# ============= PERFORMANCE CONFIGURATION =============
+# Analysis settings
+DEFAULT_TRADE_HISTORY_LIMIT = int(os.getenv('DEFAULT_TRADE_HISTORY_LIMIT', '50'))
+
+# ============= LIQUIDITY CONFIGURATION =============
+# Stock filtering settings - MIN_LIQUIDITY_VOLUME moved to stock_registry.py to avoid circular import
+
+# ============= ALERT CONFIGURATION =============
+# Alert system settings
 ENABLE_ALERTS = True
-ALERT_CHANNELS = ["console", "file"]
+ALERT_COOLDOWN_MINUTES = 30
+PRICE_ALERT_THRESHOLD = 0.02  # 2% move
+VOLUME_SPIKE_MULTIPLIER = 2.0
+RSI_ALERT_DURATION = 2  # Periods RSI must stay extreme
 
 # Development/Debug Settings
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"

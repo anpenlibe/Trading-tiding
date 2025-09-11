@@ -8,8 +8,6 @@ Modified: 2025-06-30 - Fixed interface compliance
 
 import os
 import time
-import requests
-import yfinance as yf
 from datetime import datetime, timedelta
 import json
 from typing import Optional, Dict, Any
@@ -18,6 +16,7 @@ from datetime import datetime, timezone
 
 from src.interfaces import BaseMarketDataAPI, MarketData
 from src.utils.logger import get_data_logger
+from src.config import MOCK_VOLUME_RANGE_MIN, MOCK_VOLUME_RANGE_MAX
 
 logger = get_data_logger()
 
@@ -29,20 +28,40 @@ class ZerodhaAPI(BaseMarketDataAPI):
     """Zerodha OHLC + Quote Data using Kite Connect"""
 
     def __init__(self, **kwargs):  # FIXED: Now accepts **kwargs as per interface
-        self.api_key = os.getenv("ZERODHA_API_KEY")
-        self.api_secret = os.getenv("ZERODHA_API_SECRET")
-        self.access_token = os.getenv("ZERODHA_ACCESS_TOKEN")
-
         self.kite = None
-        if self.api_key and self.access_token:
-            self.kite = KiteConnect(api_key=self.api_key)
-            self.kite.set_access_token(self.access_token)
-            logger.logger.info("ZerodhaAPI initialized")
-        else:
-            logger.logger.warning("Zerodha API key or token not configured properly")
+        self.is_authenticated = False
+        
+        try:
+            self.api_key = os.getenv("ZERODHA_API_KEY", "")
+            self.api_secret = os.getenv("ZERODHA_API_SECRET", "")
+            self.access_token = os.getenv("ZERODHA_ACCESS_TOKEN", "")
+            
+            if self.api_key and self.access_token:
+                self.kite = KiteConnect(api_key=self.api_key)
+                self.kite.set_access_token(self.access_token)
+                
+                # Test authentication with a simple call
+                try:
+                    self.kite.profile()
+                    self.is_authenticated = True
+                    logger.logger.info("Zerodha API authenticated successfully")
+                except Exception as e:
+                    logger.logger.warning(f"Zerodha authentication failed: {e}")
+                    logger.logger.info("Will use MockAPI as fallback")
+                    self.is_authenticated = False
+            else:
+                logger.logger.info("Zerodha credentials not configured - using MockAPI")
+                self.is_authenticated = False
+                
+        except ImportError:
+            logger.logger.warning("kiteconnect not installed - using MockAPI")
+            self.is_authenticated = False
+        except Exception as e:
+            logger.logger.error(f"Zerodha initialization error: {e}")
+            self.is_authenticated = False
 
-        # Preload instrument token mappings
-        self.tokens = self._load_token_map()
+        # Preload instrument token mappings only if authenticated
+        self.tokens = self._load_token_map() if self.is_authenticated else {}
 
     def _load_token_map(self) -> dict:
         """Load instrument token mappings from instruments.csv"""
@@ -92,10 +111,10 @@ class ZerodhaAPI(BaseMarketDataAPI):
  
 
     def is_available(self) -> bool:
-        return self.kite is not None
+        return self.is_authenticated
 
     def get_name(self) -> str:
-        return "zerodha"
+        return "Zerodha" if self.is_authenticated else "Zerodha(Unauthenticated)"
 
 class MockAPI(BaseMarketDataAPI):
     """Mock API for testing during market closed hours"""
@@ -136,14 +155,17 @@ class MockAPI(BaseMarketDataAPI):
         low = min(intraday_moves)
         close = intraday_moves[-1]  # Last price becomes close
         
+        # FIXED: Use naive datetime without timezone for database compatibility
+        timestamp = datetime.now().replace(microsecond=0)
+        
         return MarketData(
             symbol=symbol,
-            timestamp=datetime.now(),
+            timestamp=timestamp,
             open=round(open_price, 2),
             high=round(high, 2),
             low=round(low, 2),
             close=round(close, 2),
-            volume=random.randint(100000, 1000000),
+            volume=random.randint(MOCK_VOLUME_RANGE_MIN, MOCK_VOLUME_RANGE_MAX),
             source="mock"
         )
     

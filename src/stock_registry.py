@@ -23,6 +23,9 @@ from enum import Enum
 import json
 import os
 
+# Liquidity threshold - moved here to avoid circular import
+MIN_LIQUIDITY_VOLUME = 1000000  # Minimum daily volume for liquidity filtering
+
 
 class Sector(Enum):
     """Stock sectors for Indian market"""
@@ -316,7 +319,7 @@ class StockRegistry:
             symbol for symbol, info in self.stocks.items()
             if (info.liquidity == LiquidityRating.HIGH and
                 info.typical_spread_bps and info.typical_spread_bps <= 5 and
-                info.avg_daily_volume and info.avg_daily_volume >= 2000000 and
+                info.avg_daily_volume and info.avg_daily_volume >= MIN_LIQUIDITY_VOLUME and
                 info.is_active)
         ]
         

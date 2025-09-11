@@ -10,6 +10,10 @@ import pandas as pd
 import numpy as np
 import warnings
 from typing import Dict, Optional, List, Any
+from src.config import (
+    RSI_PERIOD, MACD_FAST, MACD_SLOW, MACD_SIGNAL,
+    SMA_PERIODS, VOLUME_SMA_PERIOD
+)
 
 warnings.filterwarnings("ignore")  # Clean output
 
@@ -45,7 +49,7 @@ def compute_indicators(df: pd.DataFrame, indicators: List[str] = None) -> Dict[s
     for ind in indicators:
         try:
             if ind == "rsi" or ind == "rsi_14":
-                result["rsi_14"] = calculate_rsi(close, 14)
+                result["rsi_14"] = calculate_rsi(close, RSI_PERIOD)
             elif ind == "macd":
                 macd_values = calculate_macd(close)
                 result["macd"] = macd_values.get("macd")
@@ -59,7 +63,7 @@ def compute_indicators(df: pd.DataFrame, indicators: List[str] = None) -> Dict[s
                 period = int(ind.split("_")[1])
                 result[ind] = calculate_sma(close, period)
             elif ind == "volume_avg_20" and volume is not None:
-                result[ind] = calculate_sma(volume, 20)
+                result[ind] = calculate_sma(volume, VOLUME_SMA_PERIOD)
             elif ind == "price_change_pct":
                 result[ind] = calculate_price_change_pct(close)
             # Add more indicators here as needed
@@ -76,7 +80,7 @@ def calculate_sma(data: pd.Series, period: int) -> Optional[float]:
     return None
 
 
-def calculate_rsi(data: pd.Series, period: int = 14) -> Optional[float]:
+def calculate_rsi(data: pd.Series, period: int = RSI_PERIOD) -> Optional[float]:
     """Calculate Relative Strength Index"""
     if len(data) < period + 1:
         return None
@@ -93,8 +97,8 @@ def calculate_rsi(data: pd.Series, period: int = 14) -> Optional[float]:
     return float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None
 
 
-def calculate_macd(data: pd.Series, fast: int = 12, slow: int = 26, 
-                  signal: int = 9) -> Dict[str, Optional[float]]:
+def calculate_macd(data: pd.Series, fast: int = MACD_FAST, slow: int = MACD_SLOW, 
+                  signal: int = MACD_SIGNAL) -> Dict[str, Optional[float]]:
     """Calculate MACD indicator with all components"""
     if len(data) < slow:
         return {'macd': None, 'macd_signal': None, 'macd_histogram': None}
@@ -142,14 +146,4 @@ def calculate_all_indicators(df: pd.DataFrame) -> Dict[str, float]:
     return compute_indicators(df)
 
 
-# Legacy function names for backward compatibility during transition
-def _rsi(series: pd.Series, period: int = 14) -> float:
-    """Legacy RSI function - use calculate_rsi instead"""
-    result = calculate_rsi(series, period)
-    return result if result is not None else 0.0
-
-
-def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> float:
-    """Legacy MACD function - use calculate_macd instead"""
-    result = calculate_macd(series, fast, slow, signal)
-    return result.get('macd_histogram', 0.0) if result.get('macd_histogram') is not None else 0.0
+# REMOVED: Legacy _rsi and _macd functions - replaced by pandas_ta

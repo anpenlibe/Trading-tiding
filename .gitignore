@@ -43,6 +43,8 @@ Thumbs.db
 .coverage
 .pytest_cache/
 htmlcov/
+*.pyc
+__pycache__/
 
 # Trading specific
 *.db
