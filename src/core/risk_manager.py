@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import logging
 
 from src.interfaces import BaseRiskManager
-from src.config import (
+from src.data.config import (
     MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT, TAKE_PROFIT_PERCENT,
     PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
     MIN_TRADE_VALUE, MAX_POSITION_SIZE

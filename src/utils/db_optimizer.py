@@ -4,7 +4,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
-from src.config import DB_PATH
+from src.data.config import DB_PATH
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, 'db_optimizer.log')

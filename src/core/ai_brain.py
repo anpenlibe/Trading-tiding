@@ -10,7 +10,7 @@ from dataclasses import asdict
 from src.interfaces import BaseDecisionModel, TradingSignal, MarketData
 from src.ai.prompt_builder import PromptBuilder
 from src.risk_manager import SimpleRiskManager
-from src.config import (
+from src.data.config import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_MAX_TOKENS, CLAUDE_TEMPERATURE,
     INITIAL_CAPITAL, MAX_DECISION_HISTORY
 )

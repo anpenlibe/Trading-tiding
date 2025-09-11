@@ -31,9 +31,9 @@ from dataclasses import dataclass
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL
+from src.data.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL
 from src.data_collector import DataCollector  # FIXED: No more IndicatorCalculator import
-from src.indicator_engine import calculate_all_indicators  # FIXED: Use unified indicator engine
+from src.core.indicator_engine import calculate_all_indicators  # FIXED: Use unified indicator engine
 from src.interfaces import MarketData
 from src.utils.logger import setup_logger
 

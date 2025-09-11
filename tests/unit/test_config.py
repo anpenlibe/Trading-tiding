@@ -11,7 +11,7 @@ class TestConfig:
     def test_config_imports_successfully(self):
         """Test that config module imports without errors."""
         try:
-            from src.config import (
+            from src.data.config import (
                 RSI_PERIOD, MACD_FAST, MACD_SLOW,
                 STOP_LOSS_PERCENT, MAX_RISK_PER_TRADE, SYMBOLS,
                 INITIAL_CAPITAL, ANTHROPIC_API_KEY
@@ -22,7 +22,7 @@ class TestConfig:
     
     def test_config_values_are_reasonable(self):
         """Test that configuration values are within reasonable ranges."""
-        from src.config import (
+        from src.data.config import (
             RSI_PERIOD, MACD_FAST, MACD_SLOW,
             STOP_LOSS_PERCENT, MAX_RISK_PER_TRADE, INITIAL_CAPITAL
         )
@@ -44,7 +44,7 @@ class TestConfig:
     
     def test_symbols_list_exists(self):
         """Test that symbols list is populated."""
-        from src.config import SYMBOLS
+        from src.data.config import SYMBOLS
         
         assert isinstance(SYMBOLS, list)
         assert len(SYMBOLS) > 0
@@ -57,7 +57,7 @@ class TestConfig:
     
     def test_market_hours_configuration(self):
         """Test market hours configuration."""
-        from src.config import MARKET_OPEN, MARKET_CLOSE, MARKET_TIMEZONE
+        from src.data.config import MARKET_OPEN, MARKET_CLOSE, MARKET_TIMEZONE
         
         assert isinstance(MARKET_OPEN, str)
         assert isinstance(MARKET_CLOSE, str)
@@ -77,7 +77,7 @@ class TestConfig:
     def test_api_configuration_exists(self):
         """Test that API configuration is present."""
         try:
-            from src.config import API_CONFIG
+            from src.data.config import API_CONFIG
             assert isinstance(API_CONFIG, dict)
         except ImportError:
             # API_CONFIG might not be defined, which is acceptable

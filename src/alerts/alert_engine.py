@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Callable, Any, Optional
 from datetime import datetime, timedelta
 from enum import Enum
-from src.config import RSI_OVERBOUGHT, RSI_OVERSOLD
+from src.data.config import RSI_OVERBOUGHT, RSI_OVERSOLD
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, 'alerts.log')

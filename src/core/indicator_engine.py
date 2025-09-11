@@ -10,7 +10,7 @@ import pandas as pd
 import numpy as np
 import warnings
 from typing import Dict, Optional, List, Any
-from src.config import (
+from src.data.config import (
     RSI_PERIOD, MACD_FAST, MACD_SLOW, MACD_SIGNAL,
     SMA_PERIODS, VOLUME_SMA_PERIOD
 )

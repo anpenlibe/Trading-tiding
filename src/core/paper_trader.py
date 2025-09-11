@@ -19,7 +19,7 @@ from src.interfaces import TradingSignal
 import pandas as pd
 
 from src.interfaces import BaseTradingExecutor
-from src.config import (
+from src.data.config import (
     INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
     MAX_POSITION_SIZE, MIN_TRADE_VALUE, DEFAULT_TRADE_HISTORY_LIMIT
 )

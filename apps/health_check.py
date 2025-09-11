@@ -33,7 +33,7 @@ def check_configuration() -> Tuple[bool, List[str]]:
     issues = []
     
     try:
-        from src.config import ANTHROPIC_API_KEY, SYMBOLS
+        from src.data.config import ANTHROPIC_API_KEY, SYMBOLS
         
         if not ANTHROPIC_API_KEY:
             issues.append("ANTHROPIC_API_KEY not configured")

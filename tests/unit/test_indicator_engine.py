@@ -3,8 +3,8 @@
 import pytest
 import pandas as pd
 import numpy as np
-from src.indicator_engine import calculate_all_indicators, compute_indicators
-from src.config import RSI_PERIOD
+from src.core.indicator_engine import calculate_all_indicators, compute_indicators
+from src.data.config import RSI_PERIOD
 
 
 class TestIndicatorEngine:

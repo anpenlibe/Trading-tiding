@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 
 from src.data_collector import DataCollector
-from src.indicator_engine import compute_indicators
+from src.core.indicator_engine import compute_indicators
 from src.interfaces import MarketData
 
 

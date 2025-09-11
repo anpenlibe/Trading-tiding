@@ -3,7 +3,7 @@
 import json
 import pandas as pd
 from typing import Dict, Any
-from src.config import (
+from src.data.config import (
     INITIAL_CAPITAL, MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT, 
     TAKE_PROFIT_PERCENT, RECENT_DATA_LOOKBACK
 )

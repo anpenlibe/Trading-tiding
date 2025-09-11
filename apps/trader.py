@@ -34,8 +34,8 @@ from src.ai_brain import ClaudeAI
 from src.risk_manager import SimpleRiskManager  
 from src.paper_trader import PaperTrader
 from src.data_collector import DataCollector
-from src.indicator_engine import calculate_all_indicators
-from src.config import SYMBOLS, INITIAL_CAPITAL, is_market_hours, ENABLE_ALERTS, PRICE_ALERT_THRESHOLD
+from src.core.indicator_engine import calculate_all_indicators
+from src.data.config import SYMBOLS, INITIAL_CAPITAL, is_market_hours, ENABLE_ALERTS, PRICE_ALERT_THRESHOLD
 from src.utils.logger import setup_logger
 from src.exceptions import TradingSystemError, DataCollectionError, AIAnalysisError
 from src.alerts.alert_engine import AlertEngine, AlertType

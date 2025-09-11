@@ -2,7 +2,7 @@
 
 from typing import Dict, Any
 from src.alerts.alert_engine import AlertRule, AlertType
-from src.config import RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD
+from src.data.config import RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD
 
 
 class PriceCrossRule(AlertRule):

@@ -23,8 +23,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.data_collector import DataCollector
-from src.data_sources import ZerodhaAPI, MarketData
-from src.config import SYMBOLS  # FIXED: Import from config instead of hardcoding
+from src.data.data_sources import ZerodhaAPI, MarketData
+from src.data.config import SYMBOLS  # FIXED: Import from config instead of hardcoding
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  DEFAULT CONFIGS (overridable via CLI or prompt)
