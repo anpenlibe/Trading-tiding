@@ -1,26 +1,33 @@
-# 🤖 Claude AI Trading System
+# 🚨 Claude AI Trading System - SYSTEM BROKEN
 
-**AI-Powered Trading Bot with Event-Driven Architecture**  
-**Status**: State 0 Baseline 🎯 | **Version**: Production-Ready Foundation  
-**AI**: Claude 3.5 Sonnet | **Cost**: <$30/month | **Win Rate**: 70%+ in backtesting  
-
----
-
-## 🎯 What This System Does
-
-This is a **complete AI-powered trading system** that uses Anthropic's Claude AI to make intelligent trading decisions on Indian NSE stocks. The system features event-driven architecture with **80% efficiency improvements** through smart alert-based trading.
-
-### **Key Capabilities**
-- **🧠 AI Trading Decisions**: Claude 3.5 Sonnet analyzes market data and makes BUY/SELL/HOLD decisions
-- **⚡ Event-Driven Trading**: Smart alert system triggers actions only when significant market events occur
-- **🛡️ Professional Risk Management**: Automated position sizing, stop losses, and portfolio risk controls
-- **📊 Complete Backtesting**: Historical simulation with comprehensive performance analytics
-- **💰 Paper Trading**: Safe simulation environment with realistic trading costs
-- **📈 24 NSE Stocks**: Curated portfolio across 8 sectors with high liquidity stocks
+**AI-Powered Trading Bot with Event-Driven Architecture**
+**Status**: ❌ FUNDAMENTALLY BROKEN - ZERO TRADES POSSIBLE
+**Critical Issue**: Position sizing algorithm prevents all trades
+**AI**: Claude 3.5 Sonnet (works) | **Integration**: BROKEN | **Trade Capability**: 0%  
 
 ---
 
-## 🚀 Quick Start (5 Minutes)
+## 🚨 CRITICAL WARNING: SYSTEM CANNOT TRADE
+
+**This system is FUNDAMENTALLY BROKEN and cannot execute any trades** due to critical flaws in the position sizing algorithm. While individual components work correctly, the integration pipeline fails completely.
+
+**DO NOT ATTEMPT TRADING** until fundamental fixes are implemented.
+
+### **Actual System Status**
+- **✅ AI Trading Decisions**: Claude 3.5 Sonnet works correctly (generates proper signals)
+- **❌ Event-Driven Trading**: Never reaches execution due to risk manager failures
+- **🚨 Risk Management**: BROKEN - Position sizing algorithm creates oversized positions
+- **❌ Trading Capability**: ZERO trades possible due to integration failure
+- **❌ Paper Trading**: Never reached due to validation failures
+- **📈 24 NSE Stocks**: Data collection works, but trading pipeline broken
+
+---
+
+## ⚠️ CRITICAL: DO NOT USE FOR TRADING
+
+**Before reading further**: This system CANNOT execute trades. The quick start will appear to work but will execute ZERO trades due to fundamental bugs. See `/system_analysis/TESTING_BASED_SYSTEM_ANALYSIS.md` for technical details.
+
+## 🚀 Quick Start (Will Demonstrate Broken System)
 
 ### **1. Installation**
 ```bash
@@ -403,4 +410,4 @@ Based on comprehensive system analysis, here are critical enhancements identifie
 
 ---
 
-**🚀 Ready to start? Run `python apps/health_check.py` to verify your setup, then `python apps/trader.py` to begin trading with Claude AI!**
+**⚠️ SYSTEM BROKEN: Do NOT attempt trading until fundamental fixes are implemented. See `system_analysis/TESTING_BASED_SYSTEM_ANALYSIS.md` for detailed issue analysis and required fixes.**
