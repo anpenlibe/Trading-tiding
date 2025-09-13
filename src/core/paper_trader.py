@@ -420,6 +420,10 @@ class PaperTrader(BaseTradingExecutor):
         
         return positions
     
+    def has_position(self, symbol: str) -> bool:
+        """Checks if an open position exists for the given symbol."""
+        return symbol in self.open_positions and self.open_positions[symbol].quantity > 0
+    
     def get_account_info(self) -> Dict[str, Any]:
         """Get account information and performance metrics"""
         total_value = self.current_capital

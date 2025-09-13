@@ -1,7 +1,7 @@
 """AI brain with enhanced error handling."""
 
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import pandas as pd
 import anthropic
 import json
@@ -315,4 +315,194 @@ class ClaudeAI(BaseDecisionModel):
         """Reset decision history."""
         self.decision_history.clear()
         logger.info("Decision history reset")
+
+    @performance_tracker("portfolio_analysis")
+    def analyze_portfolio_with_intelligent_fallback(self, portfolio_data: Dict[str, pd.DataFrame],
+                                                   portfolio_indicators: Dict[str, Dict[str, float]],
+                                                   context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Analyze portfolio with intelligent fallback to protect owned positions."""
+        try:
+            # Try efficient portfolio analysis first
+            return self._analyze_portfolio_batch(portfolio_data, portfolio_indicators, context)
+        except Exception as portfolio_error:
+            logger.warning(f"Portfolio analysis failed: {portfolio_error}, using intelligent fallback")
+            return self._intelligent_fallback_analysis(portfolio_data, portfolio_indicators, context, portfolio_error)
+
+    def _analyze_portfolio_batch(self, portfolio_data: Dict[str, pd.DataFrame],
+                                portfolio_indicators: Dict[str, Dict[str, float]],
+                                context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Analyze entire portfolio at once - scales from 1 to N symbols."""
+        try:
+            # Check circuit breaker
+            if self.consecutive_failures >= self.max_consecutive_failures:
+                logger.error(f"AI circuit breaker open - {self.consecutive_failures} consecutive failures")
+                return self._safe_portfolio_default_response(list(portfolio_data.keys()), "AI temporarily unavailable")
+
+            if context is None:
+                context = {}
+
+            # Build comprehensive portfolio prompt
+            prompt = self.prompt_builder.create_portfolio_analysis_prompt(
+                portfolio_data, portfolio_indicators, context
+            )
+
+            # Single Claude API call for all symbols
+            try:
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=CLAUDE_MAX_TOKENS * 2,  # Increase tokens for multiple symbols
+                    temperature=CLAUDE_TEMPERATURE,
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=60.0  # Longer timeout for portfolio analysis
+                )
+            except anthropic.APITimeoutError:
+                logger.warning("Claude API timeout - using fallback for portfolio")
+                self.consecutive_failures += 1
+                return self._fallback_portfolio_analysis(portfolio_data, portfolio_indicators)
+            except anthropic.APIError as e:
+                logger.error(f"Claude API error: {e}")
+                self.consecutive_failures += 1
+                raise
+
+            # Parse portfolio response
+            try:
+                portfolio_decisions = self.prompt_builder.parse_portfolio_response(
+                    response.content[0].text, portfolio_data
+                )
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse Claude portfolio response: {e}")
+                return self._safe_portfolio_default_response(list(portfolio_data.keys()), "Parse error")
+
+            # Validate all decisions
+            validated_decisions = {}
+            for symbol, decision in portfolio_decisions.get('decisions', {}).items():
+                if self._validate_decision(decision):
+                    validated_decisions[symbol] = decision
+                    # Log individual decisions (portfolio analysis doesn't have individual market data for logging)
+                    try:
+                        if symbol in portfolio_data:
+                            symbol_indicators = portfolio_indicators.get(symbol, {})
+                            self._log_decision(symbol, decision, portfolio_data[symbol], symbol_indicators)
+                    except Exception as log_error:
+                        logger.debug(f"Could not log decision for {symbol}: {log_error}")
+                else:
+                    # Fallback for invalid individual decision
+                    validated_decisions[symbol] = self._safe_default_response(f"Invalid decision for {symbol}")
+
+            # Reset failure counter on success
+            self.consecutive_failures = 0
+
+            # Note: Portfolio analysis completed (stats tracking handled by caller)
+
+            return {
+                'market_analysis': portfolio_decisions.get('market_analysis', ''),
+                'decisions': validated_decisions,
+                'timestamp': context.get('timestamp'),
+                'symbols_analyzed': len(validated_decisions)
+            }
+
+        except Exception as e:
+            logger.error(f"Portfolio analysis error: {e}")
+            self.consecutive_failures += 1
+            return self._safe_portfolio_default_response(list(portfolio_data.keys()), f"Analysis error: {str(e)}")
+
+    def _safe_portfolio_default_response(self, symbols: List[str], reason: str) -> Dict[str, Any]:
+        """Safe default response for portfolio analysis."""
+        decisions = {}
+        for symbol in symbols:
+            decisions[symbol] = self._safe_default_response(reason)
+
+        return {
+            'market_analysis': f'Default analysis due to: {reason}',
+            'decisions': decisions,
+            'symbols_analyzed': len(symbols)
+        }
+
+    def _fallback_portfolio_analysis(self, portfolio_data: Dict[str, pd.DataFrame],
+                                   portfolio_indicators: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
+        """Fallback portfolio analysis using simple rules."""
+        decisions = {}
+
+        for symbol, data in portfolio_data.items():
+            if symbol in portfolio_indicators:
+                # Use existing single-symbol fallback
+                market_data_obj = MarketData(
+                    symbol=symbol,
+                    timestamp=pd.Timestamp.now(),
+                    open=float(data['open'].iloc[-1]),
+                    high=float(data['high'].iloc[-1]),
+                    low=float(data['low'].iloc[-1]),
+                    close=float(data['close'].iloc[-1]),
+                    volume=float(data['volume'].iloc[-1])
+                )
+                decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
+
+        return {
+            'market_analysis': 'Fallback rule-based portfolio analysis',
+            'decisions': decisions,
+            'symbols_analyzed': len(decisions)
+        }
+
+    def _intelligent_fallback_analysis(self, portfolio_data: Dict[str, pd.DataFrame],
+                                     portfolio_indicators: Dict[str, Dict[str, float]],
+                                     context: Dict[str, Any], original_error: Exception) -> Dict[str, Any]:
+        """Intelligent fallback: Individual analysis for owned positions, safe defaults for others."""
+        if context is None:
+            context = {}
+
+        current_positions = context.get('current_positions', [])
+        decisions = {}
+        critical_symbols_analyzed = 0
+
+        # Priority 1: Analyze owned positions individually to prevent losses
+        if current_positions:
+            logger.info(f"Portfolio analysis failed, analyzing {len(current_positions)} owned positions individually")
+
+            for symbol in current_positions:
+                if symbol in portfolio_data and symbol in portfolio_indicators:
+                    try:
+                        # Use existing single-symbol analysis for owned positions
+                        market_data_obj = MarketData(
+                            symbol=symbol,
+                            timestamp=pd.Timestamp.now(),
+                            open=float(portfolio_data[symbol]['open'].iloc[-1]),
+                            high=float(portfolio_data[symbol]['high'].iloc[-1]),
+                            low=float(portfolio_data[symbol]['low'].iloc[-1]),
+                            close=float(portfolio_data[symbol]['close'].iloc[-1]),
+                            volume=float(portfolio_data[symbol]['volume'].iloc[-1])
+                        )
+
+                        # Try AI analysis first, fallback to rule-based if needed
+                        try:
+                            decisions[symbol] = self.analyze(portfolio_data[symbol], portfolio_indicators[symbol])
+                            critical_symbols_analyzed += 1
+                            logger.debug(f"Individual AI analysis successful for owned position: {symbol}")
+                        except Exception as individual_error:
+                            logger.debug(f"AI analysis failed for {symbol}, using rule-based fallback: {individual_error}")
+                            decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
+                            critical_symbols_analyzed += 1
+
+                    except Exception as symbol_error:
+                        logger.error(f"Complete analysis failure for owned position {symbol}: {symbol_error}")
+                        # Even owned positions get safe defaults if data is corrupted
+                        decisions[symbol] = self._safe_default_response(f"Data error for owned position: {str(symbol_error)}")
+                else:
+                    logger.warning(f"Missing data for owned position {symbol}")
+                    decisions[symbol] = self._safe_default_response(f"Missing data for owned position")
+
+        # Priority 2: Safe defaults for non-owned symbols (no individual analysis needed)
+        for symbol in portfolio_data.keys():
+            if symbol not in decisions:
+                decisions[symbol] = self._safe_default_response("Portfolio analysis failed - not owned, using safe default")
+
+        fallback_type = "individual_analysis_for_owned" if current_positions else "safe_defaults_only"
+
+        return {
+            'market_analysis': f'Intelligent fallback due to portfolio error: {str(original_error)[:100]}. Protected {len(current_positions)} owned positions with individual analysis.',
+            'decisions': decisions,
+            'symbols_analyzed': len(decisions),
+            'fallback_type': fallback_type,
+            'critical_symbols_analyzed': critical_symbols_analyzed,
+            'owned_positions_protected': len(current_positions)
+        }
     

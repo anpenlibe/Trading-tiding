@@ -28,6 +28,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import logging
 from dataclasses import dataclass
+import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,6 +52,7 @@ class SimulationConfig:
     symbols: List[str]
     initial_capital: float
     speed_multiplier: float = 1.0  # 1.0 = real time, 10.0 = 10x faster
+    simulation_interval_minutes: int = 30  # Minutes between simulation points
     enable_ai_brain: bool = True
     enable_paper_trading: bool = True
 
@@ -90,7 +93,7 @@ class HistoricalDataProvider:
                 AND timestamp <= ?
             ORDER BY timestamp ASC
         '''
-        
+     
         params = config.symbols + [config.start_date, config.end_date + ' 23:59:59']
         df = pd.read_sql_query(query, self.conn, params=params)
         
@@ -283,11 +286,19 @@ class HistoricalSimulator:
         self.load_simulation_data()
         
         # Get unique timestamps in chronological order
-        timestamps = sorted(self.simulation_data['timestamp'].unique())
+        all_timestamps = sorted(self.simulation_data['timestamp'].unique())
+
+        # Filter timestamps based on simulation_interval_minutes
+        timestamps = []
+        for ts in all_timestamps:
+            if ts.minute % self.config.simulation_interval_minutes == 0:
+                timestamps.append(ts)
+
         self.simulation_stats['start_time'] = datetime.now()
         self.simulation_stats['total_ticks'] = len(timestamps)
-        
-        logger.info(f"Simulating {len(timestamps)} time points from {timestamps[0]} to {timestamps[-1]}")
+
+        logger.info(f"Simulating {len(timestamps)} time points ({self.config.simulation_interval_minutes}-min intervals) from {timestamps[0] if timestamps else 'N/A'} to {timestamps[-1] if timestamps else 'N/A'}")
+        logger.info(f"Filtered from {len(all_timestamps)} total data points to {len(timestamps)} simulation points")
         
         # Run simulation
         try:
@@ -318,56 +329,178 @@ class HistoricalSimulator:
             logger.error(f"Simulation error: {e}")
     
     def process_timestamp(self, timestamp: pd.Timestamp):
-        """Process all symbols at a given timestamp"""
+        """Process all symbols at a given timestamp using portfolio analysis"""
+
+        # Collect data for all symbols
+        portfolio_data = {}
+        portfolio_indicators = {}
+        current_prices = {}
+
+        skipped_symbols = {}  # Track why symbols are skipped
+
         for symbol in self.config.symbols:
             # Get current data
             current_data = self.data_collector.get_current_data(symbol)
             if not current_data:
+                skipped_symbols[symbol] = "No current data"
                 continue
-            
+
+            # Get historical data for indicators
+            historical_df = self.data_collector.get_historical_data_for_indicators(symbol, 50)
+            if len(historical_df) < 20:
+                skipped_symbols[symbol] = f"Insufficient data ({len(historical_df)} periods)"
+                continue
+
             # Calculate indicators
             indicators = self.data_collector.calculate_indicators(symbol)
             if not indicators:
+                skipped_symbols[symbol] = "No indicators calculated"
                 continue
-            
-            # Make AI decision
-            if self.config.enable_ai_brain and self.ai_brain:
-                try:
-                    historical_df = self.data_collector.get_historical_data_for_indicators(symbol, 50)
-                    if len(historical_df) >= 20:
-                        # Add symbol column for AI analysis
-                        historical_df['symbol'] = symbol
-                        
-                        # FIXED: Use correct analyze method signature
-                        signal = self.ai_brain.analyze(historical_df, indicators)
-                        self.simulation_stats['ai_decisions'] += 1
-                        
-                        # Execute trade if signal is not HOLD
-                        if (self.config.enable_paper_trading and 
-                            self.paper_trader and 
-                            signal.get('signal') != "HOLD"):
-                            
-                            # FIXED: Use correct paper trader API with risk validation
-                            trade_result = self._execute_simulated_trade(
-                                symbol, signal, current_data.close, timestamp
-                            )
-                            
-                            if trade_result.get('status') == 'EXECUTED':
-                                self.trades_executed.append({
-                                    'timestamp': timestamp,
-                                    'symbol': symbol,
-                                    'action': signal['signal'],
-                                    'price': current_data.close,
-                                    'quantity': signal.get('position_size', 1),
-                                    'reasoning': signal.get('reasoning', ''),
-                                    'confidence': signal.get('confidence', 0),
-                                    'stop_loss': signal.get('stop_loss'),
-                                    'target': signal.get('target')
-                                })
-                                self.simulation_stats['trades_count'] += 1
-                
-                except Exception as e:
-                    logger.debug(f"AI decision error for {symbol}: {e}")
+
+            # Add symbol column for analysis
+            historical_df['symbol'] = symbol
+
+            # Store data for portfolio analysis
+            portfolio_data[symbol] = historical_df
+            portfolio_indicators[symbol] = indicators
+            current_prices[symbol] = current_data.close
+
+        # Log diagnostic info
+        if skipped_symbols:
+            logger.warning(f"Skipped symbols at {timestamp}: {skipped_symbols}")
+        logger.info(f"Processing {len(portfolio_data)} symbols: {list(portfolio_data.keys())}")
+
+        # Skip if no valid data collected
+        if not portfolio_data:
+            return
+
+        # Make single portfolio AI decision
+        if self.config.enable_ai_brain and self.ai_brain:
+            try:
+                # Get current portfolio positions
+                current_positions = self.paper_trader.get_positions() if self.paper_trader else []
+                position_symbols = [symbol for symbol, pos_data in current_positions.items() if pos_data.get('quantity', 0) > 0]
+
+                # Get account info safely
+                account_info = {}
+                if self.paper_trader:
+                    try:
+                        account_info = self.paper_trader.get_account_info() or {}
+                    except Exception as e:
+                        logger.debug(f"Could not get account info: {e}")
+                        account_info = {}
+
+                # Create context for portfolio analysis
+                context = {
+                    'strategy': 'swing',
+                    'timestamp': timestamp,
+                    'simulation_interval': self.config.simulation_interval_minutes,
+                    'current_positions': position_symbols,
+                    'account_info': account_info
+                }
+
+                # Portfolio analysis with intelligent fallback for position protection
+                portfolio_result = self.ai_brain.analyze_portfolio_with_intelligent_fallback(
+                    portfolio_data, portfolio_indicators, context
+                )
+
+                # Update statistics
+                num_decisions = len(portfolio_result.get('decisions', {}))
+                self.simulation_stats['ai_decisions'] += num_decisions
+
+                # Log market analysis and fallback status
+                market_analysis = portfolio_result.get('market_analysis', '')
+                if market_analysis:
+                    logger.info(f"Market Analysis at {timestamp}: {market_analysis[:100]}...")
+
+                # Log intelligent fallback status if used
+                fallback_type = portfolio_result.get('fallback_type')
+                if fallback_type:
+                    critical_analyzed = portfolio_result.get('critical_symbols_analyzed', 0)
+                    owned_protected = portfolio_result.get('owned_positions_protected', 0)
+                    logger.warning(f"Intelligent fallback activated: {fallback_type}, protected {owned_protected} positions with {critical_analyzed} individual analyses")
+
+                # Process individual decisions
+                for symbol, decision in portfolio_result.get('decisions', {}).items():
+                    if symbol not in current_prices:
+                        continue
+
+                    signal_type = decision.get('signal')
+
+                    # Check if we can actually execute this trade
+                    if signal_type == "SELL":
+                        if not self.paper_trader.has_position(symbol):
+                            logger.debug(f"Skipping SELL for {symbol} - no position held")
+                            continue
+
+                    # Execute trade if signal is not HOLD
+                    if (self.config.enable_paper_trading and
+                        self.paper_trader and
+                        signal_type != "HOLD"):
+
+                        trade_result = self._execute_simulated_trade(
+                            symbol, decision, current_prices[symbol], timestamp
+                        )
+
+                        if trade_result.get('status') == 'EXECUTED':
+                            self.trades_executed.append({
+                                'timestamp': timestamp,
+                                'symbol': symbol,
+                                'action': decision['signal'],
+                                'price': current_prices[symbol],
+                                'quantity': decision.get('position_size', 1),
+                                'reasoning': decision.get('reasoning', ''),
+                                'confidence': decision.get('confidence', 0),
+                                'stop_loss': decision.get('stop_loss'),
+                                'target': decision.get('target'),
+                                'market_analysis': market_analysis[:200]  # Store brief market context
+                            })
+                            self.simulation_stats['trades_count'] += 1
+
+                logger.info(f"Portfolio analysis completed: {num_decisions} symbols analyzed, {len([d for d in portfolio_result.get('decisions', {}).values() if d.get('signal') != 'HOLD'])} signals generated")
+
+            except Exception as e:
+                logger.error(f"Portfolio analysis error at {timestamp}: {e}")
+                # Fallback to individual analysis is currently disabled for testing.
+                # This can be re-enabled for live trading to ensure robustness.
+                # self._fallback_individual_analysis(portfolio_data, portfolio_indicators, current_prices, timestamp)
+
+    def _fallback_individual_analysis(self, portfolio_data, portfolio_indicators, current_prices, timestamp):
+        """Fallback to individual symbol analysis if portfolio analysis fails"""
+        logger.warning("Falling back to individual symbol analysis")
+
+        for symbol in portfolio_data.keys():
+            try:
+                if symbol in portfolio_indicators and symbol in current_prices:
+                    # Use single-symbol analysis as fallback
+                    signal = self.ai_brain.analyze(portfolio_data[symbol], portfolio_indicators[symbol])
+                    self.simulation_stats['ai_decisions'] += 1
+
+                    # Execute trade if needed
+                    if (self.config.enable_paper_trading and
+                        self.paper_trader and
+                        signal.get('signal') != "HOLD"):
+
+                        trade_result = self._execute_simulated_trade(
+                            symbol, signal, current_prices[symbol], timestamp
+                        )
+
+                        if trade_result.get('status') == 'EXECUTED':
+                            self.trades_executed.append({
+                                'timestamp': timestamp,
+                                'symbol': symbol,
+                                'action': signal['signal'],
+                                'price': current_prices[symbol],
+                                'quantity': signal.get('position_size', 1),
+                                'reasoning': signal.get('reasoning', ''),
+                                'confidence': signal.get('confidence', 0),
+                                'stop_loss': signal.get('stop_loss'),
+                                'target': signal.get('target')
+                            })
+                            self.simulation_stats['trades_count'] += 1
+
+            except Exception as e:
+                logger.debug(f"Fallback analysis error for {symbol}: {e}")
     
     def _execute_simulated_trade(self, symbol: str, signal: Dict, current_price: float, timestamp: pd.Timestamp) -> Dict:
         """Execute a trade using the unified pipeline approach"""
@@ -406,6 +539,9 @@ class HistoricalSimulator:
                     'entry_price': risk_params.entry_price,
                     'risk_amount': risk_params.risk_amount
                 })
+            
+            # Add symbol to the signal dictionary before execution
+            signal['symbol'] = symbol
             
             # FIXED: Use correct execute_trade method
             return self.paper_trader.execute_trade(signal, current_price)
@@ -518,6 +654,9 @@ def main():
     parser.add_argument('--days', type=int, default=3, help='Number of days to simulate (default: 3)')
     parser.add_argument('--symbols', nargs='+', help='Symbols to simulate (default: all configured)')
     parser.add_argument('--speed', type=float, default=5.0, help='Simulation speed multiplier (default: 5.0)')
+    parser.add_argument('--sim-interval', type=int, default=30, help='Simulation interval in minutes (default: 30)')
+    parser.add_argument('--start-date', type=str, help='Start date for simulation (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, help='End date for simulation (YYYY-MM-DD)')
     args = parser.parse_args()
     
     print("🕰️  HISTORICAL DATA SIMULATION")
@@ -555,8 +694,13 @@ def main():
     
     config = create_default_config()
     config.symbols = symbols  # Use the selected symbols
+    config.simulation_interval_minutes = args.sim_interval
     
-    if choice == "1":
+    if args.start_date and args.end_date:
+        config.start_date = args.start_date
+        config.end_date = args.end_date
+        config.speed_multiplier = args.speed
+    elif choice == "1":
         days_to_simulate = args.days if args.auto else 3
         config.start_date = (datetime.now() - timedelta(days=days_to_simulate)).strftime('%Y-%m-%d')
         config.speed_multiplier = args.speed if args.auto else 5.0
@@ -603,6 +747,7 @@ def main():
     
     print(f"\n🚀 Starting simulation from {config.start_date} to {config.end_date}")
     print(f"⚡ Speed: {config.speed_multiplier}x")
+    print(f"⏱️  Simulation Interval: {config.simulation_interval_minutes} minutes")
     print(f"🧠 AI Brain: {'✅' if config.enable_ai_brain else '❌'}")
     print(f"💰 Paper Trading: {'✅' if config.enable_paper_trading else '❌'}")
     print("\nPress Ctrl+C to stop the simulation at any time")

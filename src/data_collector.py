@@ -73,28 +73,21 @@ class DataCollector:
         apis = []
         live_apis = []  # Track real/live APIs separately
         
-        for api_class in [ZerodhaAPI, MockAPI]:
+        # Disclaimer about MockAPI
+        logger.info("Disclaimer: The MockAPI is intended for testing the application pipeline and should not be used for actual data collection or live trading.")
+
+        for api_class in [ZerodhaAPI]: # Explicitly exclude MockAPI from the loop
             try:
                 api = api_class()
                 if api.is_available():
-                    # In live trading mode, only allow live data sources
-                    if (self.safety_config.mode.value == 'live' and 
-                        api_class.__name__ == 'MockAPI'):
-                        logger.warning("Skipping MockAPI in live trading mode")
-                        continue
-                    
                     apis.append(api)
-                    
-                    # Track real APIs (non-mock) for live trading validation
-                    if api_class.__name__ != 'MockAPI':
-                        live_apis.append(api)
-                    
+                    live_apis.append(api)
                     # Create circuit breaker for this API
                     self.api_circuit_breakers[api.__class__.__name__] = CircuitBreaker(
                         failure_threshold=3,
                         recovery_timeout=300  # 5 minutes
                     )
-                    logger.info(f"Initialized {api.__class__.__name__}")
+                    logger.info(f"Initialized {api_class.__name__}")
             except Exception as e:
                 logger.warning(f"Failed to initialize {api_class.__name__}: {e}")
         

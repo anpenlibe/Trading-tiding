@@ -18,7 +18,7 @@ class TestDataCollection:
         assert collector is not None
         assert hasattr(collector, 'apis')
         assert hasattr(collector, 'cache')
-        assert len(collector.apis) >= 2  # Should have Zerodha + Mock APIs
+        assert len(collector.apis) >= 1  # Should have at least Zerodha API
     
     def test_get_recent_data_returns_dataframe(self):
         """Test that get_recent_data returns proper DataFrame format."""

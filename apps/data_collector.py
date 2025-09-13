@@ -35,7 +35,7 @@ from src.data.config import SYMBOLS  # FIXED: Import from config instead of hard
 #  DEFAULT CONFIGS (overridable via CLI or prompt)
 # ──────────────────────────────────────────────────────────────────────────────
 DEFAULT_PERIOD = "1mo"       # fallback period if no --days
-DEFAULT_INTERVAL = "5m"      # 1m, 5m, 15m, 30m, 1d
+DEFAULT_COLLECTION_INTERVAL = "5m"      # 1m, 5m, 15m, 30m, 1d
 
 INTERVAL_MAP = {
     "1m": "minute",
@@ -80,9 +80,13 @@ def main():
         help="Preset period if --days not given"
     )
     parser.add_argument(
-        "--interval", default=DEFAULT_INTERVAL,
+        "--interval", default=DEFAULT_COLLECTION_INTERVAL,
         choices=list(INTERVAL_MAP.keys()),
         help="Candle interval"
+    )
+    parser.add_argument(
+        "--symbols", nargs='+',
+        help="List of symbols to fetch (overrides config)"
     )
     args = parser.parse_args()
 
@@ -112,8 +116,10 @@ def main():
     )
     interval = INTERVAL_MAP[args.interval]
 
+    symbols_to_fetch = args.symbols if args.symbols else SYMBOLS
+    
     logging.info(f"Historical data collection started")
-    logging.info(f"Symbols: {len(SYMBOLS)} from config")
+    logging.info(f"Symbols: {len(symbols_to_fetch)} to fetch")
     logging.info(f"Period: {from_date} to {to_date}")
     logging.info(f"Interval: {interval}")
     
@@ -121,7 +127,7 @@ def main():
     total_saved = 0
 
     # Loop through symbols and fetch
-    for symbol in SYMBOLS:
+    for symbol in symbols_to_fetch:
         token = zerodha.tokens.get(symbol)
         if not token:
             logging.warning("Skipping %s: Token not found", symbol)
