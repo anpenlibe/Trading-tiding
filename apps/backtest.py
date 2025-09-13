@@ -82,19 +82,43 @@ class HistoricalDataProvider:
         return result['start_date'], result['end_date']
     
     def get_simulation_data(self, config: SimulationConfig) -> pd.DataFrame:
-        """Get all data for simulation period, sorted chronologically"""
+        """Get all data for simulation period including previous trading day context"""
         placeholders = ','.join(['?' for _ in config.symbols])
-        query = f'''
-            SELECT 
-                symbol, timestamp, open, high, low, close, volume, source
-            FROM price_data 
+
+        # Find the last trading day before simulation start date for historical context
+        # Query to find the most recent trading day before our simulation date
+        last_trading_day_query = f'''
+            SELECT MAX(date(timestamp)) as last_trading_date
+            FROM price_data
             WHERE symbol IN ({placeholders})
-                AND timestamp >= ? 
+            AND date(timestamp) < ?
+        '''
+
+        # Get the last trading day
+        last_trading_params = config.symbols + [config.start_date]
+        result = self.conn.execute(last_trading_day_query, last_trading_params).fetchone()
+
+        if result and result['last_trading_date']:
+            # Use the last trading day as our data start
+            actual_start_date = result['last_trading_date']
+            logger.info(f"Including historical context from last trading day: {actual_start_date}")
+        else:
+            # Fallback: go back 7 days to ensure we capture previous trading day even with weekends/holidays
+            start_date = pd.Timestamp(config.start_date) - pd.Timedelta(days=7)
+            actual_start_date = start_date.strftime('%Y-%m-%d')
+            logger.warning(f"Could not find last trading day, using fallback: {actual_start_date}")
+
+        query = f'''
+            SELECT
+                symbol, timestamp, open, high, low, close, volume, source
+            FROM price_data
+            WHERE symbol IN ({placeholders})
+                AND timestamp >= ?
                 AND timestamp <= ?
             ORDER BY timestamp ASC
         '''
-     
-        params = config.symbols + [config.start_date, config.end_date + ' 23:59:59']
+
+        params = config.symbols + [actual_start_date, config.end_date + ' 23:59:59']
         df = pd.read_sql_query(query, self.conn, params=params)
         
         if df.empty:
@@ -154,13 +178,19 @@ class SimulationDataCollector:
         )
     
     def get_historical_data_for_indicators(self, symbol: str, periods: int = 200) -> pd.DataFrame:
-        """Get historical data for indicator calculation"""
+        """Get historical data for indicator calculation including previous day context"""
         if self.current_time is None:
             return pd.DataFrame()
-        
-        # Get data before current time
+
+        # Calculate previous day start (include data from previous trading day)
+        current_date = self.current_time.date()
+        previous_day_start = pd.Timestamp(current_date) - pd.Timedelta(days=1)
+        previous_day_start = previous_day_start.replace(hour=9, minute=15)  # Previous day market start
+
+        # Get data from previous day onwards, up to current time
         symbol_data = self.historical_data[
-            (self.historical_data['symbol'] == symbol) & 
+            (self.historical_data['symbol'] == symbol) &
+            (self.historical_data['timestamp'] >= previous_day_start) &
             (self.historical_data['timestamp'] <= self.current_time)
         ].tail(periods)
         
@@ -288,11 +318,31 @@ class HistoricalSimulator:
         # Get unique timestamps in chronological order
         all_timestamps = sorted(self.simulation_data['timestamp'].unique())
 
-        # Filter timestamps based on simulation_interval_minutes
+        # Filter timestamps based on simulation_interval_minutes and start from 10:00 AM
+        # Only simulate the actual target date, not the historical context days
         timestamps = []
+        simulation_start_date = pd.Timestamp(self.config.start_date).date()
+        simulation_end_date = pd.Timestamp(self.config.end_date).date()
+
+        # Calculate proper intervals from start time
+        first_valid_time = None
         for ts in all_timestamps:
-            if ts.minute % self.config.simulation_interval_minutes == 0:
-                timestamps.append(ts)
+            if (simulation_start_date <= ts.date() <= simulation_end_date and ts.hour >= 10):
+                first_valid_time = ts
+                break
+
+        for ts in all_timestamps:
+            # Only process timestamps within the actual simulation date range
+            if (simulation_start_date <= ts.date() <= simulation_end_date and ts.hour >= 10):
+                if first_valid_time is None:
+                    continue
+
+                # Calculate minutes elapsed since first valid time
+                time_diff = (ts - first_valid_time).total_seconds() / 60
+
+                # Check if this timestamp is at the correct interval
+                if time_diff % self.config.simulation_interval_minutes == 0:
+                    timestamps.append(ts)
 
         self.simulation_stats['start_time'] = datetime.now()
         self.simulation_stats['total_ticks'] = len(timestamps)
