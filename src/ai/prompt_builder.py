@@ -289,7 +289,12 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
             "reasoning": "Brief analysis for {symbol}",
             "entry_price": null,
             "stop_loss": null,
-            "target": null
+            "take_profit": null,
+            "emergency_thresholds": {{
+                "stop_loss_pct": -3.5,
+                "take_profit_pct": 4.0,
+                "recheck_trigger_pct": 2.0
+            }}
         }}{comma}"""
 
         prompt += """
@@ -299,7 +304,12 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
 Valid signals: BUY, SELL, HOLD
 Confidence: 0.0 to 1.0
 Set entry_price to current price for BUY/SELL, null for HOLD
-Set stop_loss and target to null for HOLD signals
+Set stop_loss and take_profit to null for HOLD signals
+
+EMERGENCY THRESHOLDS (provide for ALL positions):
+- stop_loss_pct: Negative percentage to trigger emergency sell analysis (e.g., -3.5 for 3.5% loss)
+- take_profit_pct: Positive percentage to trigger emergency profit-taking analysis (e.g., 4.0 for 4% gain)
+- recheck_trigger_pct: Percentage move in either direction to trigger position re-evaluation (e.g., 2.0)
 """
 
         return prompt
@@ -353,13 +363,23 @@ Set stop_loss and target to null for HOLD signals
                     stop_loss = decision_data.get('stop_loss')
                     target = decision_data.get('target')
 
+                    # Extract emergency thresholds
+                    emergency_thresholds = decision_data.get('emergency_thresholds', {})
+                    if not isinstance(emergency_thresholds, dict):
+                        emergency_thresholds = {}
+
                     decisions[symbol] = {
                         'signal': signal,
                         'confidence': confidence,
                         'reasoning': reasoning,
                         'entry_price': entry_price,
                         'stop_loss': stop_loss,
-                        'target': target
+                        'target': target,
+                        'emergency_thresholds': {
+                            'stop_loss_pct': emergency_thresholds.get('stop_loss_pct', -3.5),
+                            'take_profit_pct': emergency_thresholds.get('take_profit_pct', 4.0),
+                            'recheck_trigger_pct': emergency_thresholds.get('recheck_trigger_pct', 2.0)
+                        }
                     }
                 else:
                     # Default decision if symbol missing from response
@@ -369,7 +389,12 @@ Set stop_loss and target to null for HOLD signals
                         'reasoning': f'No analysis provided for {symbol}',
                         'entry_price': None,
                         'stop_loss': None,
-                        'target': None
+                        'target': None,
+                        'emergency_thresholds': {
+                            'stop_loss_pct': -3.5,
+                            'take_profit_pct': 4.0,
+                            'recheck_trigger_pct': 2.0
+                        }
                     }
 
             return {
