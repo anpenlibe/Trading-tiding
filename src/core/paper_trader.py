@@ -469,7 +469,7 @@ class PaperTrader(BaseTradingExecutor):
         try:
             # Basic validations
             if quantity <= 0:
-                return {"valid": False, "reason": "Invalid quantity"}
+                return {"valid": False, "reason": "Invalid quantity - insufficient capital for position"}
         
             if price <= 0:
                 return {"valid": False, "reason": "Invalid price"}

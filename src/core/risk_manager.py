@@ -86,38 +86,68 @@ class SimpleRiskManager(BaseRiskManager):
         if self.risk_reward_ratio < 1.5:
             logger.warning(f"Risk-reward ratio {self.risk_reward_ratio:.1f} is below recommended 1.5")
     
-    def calculate_position_size(self, capital: float, risk_per_trade: float, 
-                              stop_loss_distance: float) -> int:
+    def calculate_position_size(self, capital: float, risk_per_trade: float,
+                              stop_loss_distance: float, entry_price: float = None) -> int:
         """
-        Calculate position size based on risk parameters.
-        
-        This is the core Kelly Criterion-inspired position sizing:
-        Position Size = Risk Amount / Risk per Share
-        
+        Calculate position size with CAPITAL-FIRST approach to respect position limits.
+
+        NEW ALGORITHM:
+        1. Calculate max position value based on capital limits
+        2. Calculate Kelly-suggested position size
+        3. Take the MINIMUM to respect both risk and capital constraints
+
         Args:
             capital: Total available capital
             risk_per_trade: Risk percentage as decimal (0.02 = 2%)
             stop_loss_distance: Dollar distance to stop loss
-            
+            entry_price: Entry price for position value calculation
+
         Returns:
-            Number of shares to trade
+            Number of shares to trade (respects both risk and capital limits)
         """
         if stop_loss_distance <= 0:
             logger.error("Stop loss distance must be positive")
             return 0
-        
-        # Calculate maximum risk amount in currency
+
+        # Calculate Kelly-suggested position size (old method)
         risk_amount = capital * risk_per_trade
-        
-        # Calculate position size
-        position_size = int(risk_amount / stop_loss_distance)
-        
-        # Ensure at least 1 share
-        position_size = max(1, position_size)
-        
-        logger.debug(f"Position sizing: Capital={capital}, Risk={risk_per_trade*100}%, "
-                    f"Stop distance={stop_loss_distance}, Position size={position_size}")
-        
+        kelly_position_size = int(risk_amount / stop_loss_distance)
+
+        # NEW: Calculate maximum position size based on capital limits
+        if entry_price and entry_price > 0:
+            max_position_value = capital * MAX_POSITION_SIZE  # 20% of capital
+            max_shares_by_capital = int(max_position_value / entry_price)
+
+            # Take the MINIMUM to respect both constraints
+            position_size = min(kelly_position_size, max_shares_by_capital)
+
+            # Calculate actual values for logging
+            actual_position_value = position_size * entry_price
+            actual_position_percent = (actual_position_value / capital) * 100
+            actual_risk = position_size * stop_loss_distance
+            actual_risk_percent = (actual_risk / capital) * 100
+
+            logger.debug(f"Position sizing: Capital=₹{capital:,.0f}, Target Risk={risk_per_trade*100:.1f}%")
+            logger.debug(f"  Kelly suggests: {kelly_position_size} shares")
+            logger.debug(f"  Capital limits: {max_shares_by_capital} shares (max {MAX_POSITION_SIZE*100}%)")
+            logger.debug(f"  Final position: {position_size} shares = ₹{actual_position_value:,.0f} ({actual_position_percent:.1f}%)")
+            logger.debug(f"  Actual risk: ₹{actual_risk:,.0f} ({actual_risk_percent:.1f}%)")
+
+        else:
+            # Fallback to Kelly method if no entry price provided
+            position_size = kelly_position_size
+            logger.warning("No entry_price provided - using Kelly method only (may violate position limits)")
+
+        # Ensure at least 1 share, but only if it doesn't violate capital limits
+        if entry_price and entry_price > 0:
+            if entry_price <= capital * MAX_POSITION_SIZE:  # 1 share fits in position limit
+                position_size = max(1, position_size)
+            else:
+                position_size = 0  # Even 1 share exceeds position limits
+                logger.warning(f"Stock price ₹{entry_price:,.0f} exceeds capital position limit of ₹{capital * MAX_POSITION_SIZE:,.0f}")
+        else:
+            position_size = max(1, position_size)
+
         return position_size
     
     def calculate_risk_parameters(self, 
@@ -165,7 +195,7 @@ class SimpleRiskManager(BaseRiskManager):
         stop_distance = abs(adjusted_entry - stop_loss)
         
         # Calculate position size
-        position_size = self.calculate_position_size(capital, risk_percent, stop_distance)
+        position_size = self.calculate_position_size(capital, risk_percent, stop_distance, adjusted_entry)
         
         # Calculate position value and costs
         position_value = position_size * adjusted_entry

@@ -129,7 +129,7 @@ class BaseRiskManager(ABC):
 
     @abstractmethod
     def calculate_position_size(self, capital: float, risk_per_trade: float,
-                                 stop_loss_distance: float) -> int:
+                                 stop_loss_distance: float, entry_price: float = None) -> int:
         """Calculate appropriate position size based on risk parameters"""
         pass
 
