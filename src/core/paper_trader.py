@@ -21,7 +21,8 @@ import pandas as pd
 from src.interfaces import BaseTradingExecutor
 from src.data.config import (
     INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
-    MAX_POSITION_SIZE, MIN_TRADE_VALUE, DEFAULT_TRADE_HISTORY_LIMIT
+    MAX_POSITION_SIZE, MIN_TRADE_VALUE, DEFAULT_TRADE_HISTORY_LIMIT,
+    EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 )
 from src.utils.logger import setup_logger
 from src.monitoring.performance import performance_tracker
@@ -56,9 +57,9 @@ class PaperTrade:
     status: str  # OPEN, CLOSED
 
     # Emergency thresholds (percentages from entry price)
-    emergency_stop_loss_pct: float = -3.5  # Default -3.5%
-    emergency_take_profit_pct: float = 4.0  # Default +4.0%
-    emergency_recheck_pct: float = 2.0      # Default ±2.0%
+    emergency_stop_loss_pct: float = EMERGENCY_STOP_LOSS_PCT  # Configurable default
+    emergency_take_profit_pct: float = EMERGENCY_TAKE_PROFIT_PCT  # Configurable default
+    emergency_recheck_pct: float = EMERGENCY_RECHECK_PCT  # Configurable default
     ai_monitoring_comment: Optional[str] = None  # AI's reason for monitoring
     exit_price: Optional[float] = None
     exit_timestamp: Optional[str] = None
@@ -249,9 +250,9 @@ class PaperTrader(BaseTradingExecutor):
         
         # Extract emergency thresholds from signal
         emergency_thresholds = signal.get('emergency_thresholds', {})
-        emergency_stop_loss_pct = emergency_thresholds.get('stop_loss_pct', -3.5)
-        emergency_take_profit_pct = emergency_thresholds.get('take_profit_pct', 4.0)
-        emergency_recheck_pct = emergency_thresholds.get('recheck_trigger_pct', 2.0)
+        emergency_stop_loss_pct = emergency_thresholds.get('stop_loss_pct', EMERGENCY_STOP_LOSS_PCT)
+        emergency_take_profit_pct = emergency_thresholds.get('take_profit_pct', EMERGENCY_TAKE_PROFIT_PCT)
+        emergency_recheck_pct = emergency_thresholds.get('recheck_trigger_pct', EMERGENCY_RECHECK_PCT)
         ai_comment = emergency_thresholds.get('comment')
 
         # Create trade record

@@ -4,8 +4,9 @@ import json
 import pandas as pd
 from typing import Dict, Any
 from src.data.config import (
-    INITIAL_CAPITAL, MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT, 
-    TAKE_PROFIT_PERCENT, RECENT_DATA_LOOKBACK
+    INITIAL_CAPITAL, MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT,
+    TAKE_PROFIT_PERCENT, RECENT_DATA_LOOKBACK,
+    EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 )
 
 
@@ -39,9 +40,9 @@ class PromptBuilder:
 
         if should_monitor:
             return {
-                'stop_loss_pct': thresholds.get('stop_loss_pct') if thresholds.get('stop_loss_pct') is not None else -3.5,
-                'take_profit_pct': thresholds.get('take_profit_pct') if thresholds.get('take_profit_pct') is not None else 4.0,
-                'recheck_trigger_pct': thresholds.get('recheck_trigger_pct') if thresholds.get('recheck_trigger_pct') is not None else 2.0,
+                'stop_loss_pct': thresholds.get('stop_loss_pct') if thresholds.get('stop_loss_pct') is not None else EMERGENCY_STOP_LOSS_PCT,
+                'take_profit_pct': thresholds.get('take_profit_pct') if thresholds.get('take_profit_pct') is not None else EMERGENCY_TAKE_PROFIT_PCT,
+                'recheck_trigger_pct': thresholds.get('recheck_trigger_pct') if thresholds.get('recheck_trigger_pct') is not None else EMERGENCY_RECHECK_PCT,
                 'comment': thresholds.get('comment') or 'Standard monitoring'
             }
         else:
@@ -321,9 +322,9 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
             "stop_loss": null,
             "take_profit": null,
             "emergency_thresholds": {{
-                "stop_loss_pct": -3.5,
-                "take_profit_pct": 4.0,
-                "recheck_trigger_pct": 2.0
+                "stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT},
+                "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT},
+                "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}
             }}
         }}{comma}"""
 
@@ -337,9 +338,9 @@ Set entry_price to current price for BUY/SELL, null for HOLD
 Set stop_loss and take_profit to null for HOLD signals
 
 EMERGENCY THRESHOLDS (provide for ALL positions):
-- stop_loss_pct: Negative percentage to trigger emergency sell analysis (e.g., -3.5 for 3.5% loss)
-- take_profit_pct: Positive percentage to trigger emergency profit-taking analysis (e.g., 4.0 for 4% gain)
-- recheck_trigger_pct: Percentage move in either direction to trigger position re-evaluation (e.g., 2.0)
+- stop_loss_pct: Negative percentage to trigger emergency sell analysis (e.g., {EMERGENCY_STOP_LOSS_PCT} for {abs(EMERGENCY_STOP_LOSS_PCT):.1f}% loss)
+- take_profit_pct: Positive percentage to trigger emergency profit-taking analysis (e.g., {EMERGENCY_TAKE_PROFIT_PCT} for {EMERGENCY_TAKE_PROFIT_PCT:.1f}% gain)
+- recheck_trigger_pct: Percentage move in either direction to trigger position re-evaluation (e.g., {EMERGENCY_RECHECK_PCT})
 """
 
         return prompt

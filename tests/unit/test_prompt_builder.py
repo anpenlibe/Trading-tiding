@@ -9,6 +9,7 @@ import pytest
 import pandas as pd
 from unittest.mock import patch
 from src.ai.prompt_builder import PromptBuilder
+from src.data.config import EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 
 
 class TestExtractEmergencyThresholds:
@@ -296,6 +297,45 @@ class TestPortfolioResponseParsing:
         assert reliance['signal'] == 'BUY'
         assert reliance['emergency_thresholds']['stop_loss_pct'] == -3.5  # Default
         assert reliance['emergency_thresholds']['take_profit_pct'] == 4.0  # Default
+
+
+class TestEmergencyThresholdConfiguration:
+    """Test that emergency thresholds use configurable defaults."""
+
+    def test_uses_configurable_defaults(self):
+        """Test that extract_emergency_thresholds uses config values."""
+        thresholds = {}
+        result = PromptBuilder.extract_emergency_thresholds(thresholds, True, 'HOLD')
+
+        # Should use values from config, not hardcoded values
+        assert result['stop_loss_pct'] == EMERGENCY_STOP_LOSS_PCT
+        assert result['take_profit_pct'] == EMERGENCY_TAKE_PROFIT_PCT
+        assert result['recheck_trigger_pct'] == EMERGENCY_RECHECK_PCT
+        assert result['comment'] == 'Standard monitoring'
+
+    @patch('src.ai.prompt_builder.EMERGENCY_STOP_LOSS_PCT', -5.0)
+    @patch('src.ai.prompt_builder.EMERGENCY_TAKE_PROFIT_PCT', 8.0)
+    @patch('src.ai.prompt_builder.EMERGENCY_RECHECK_PCT', 3.0)
+    def test_respects_custom_config_values(self):
+        """Test that custom config values are respected."""
+        thresholds = {}
+        result = PromptBuilder.extract_emergency_thresholds(thresholds, True, 'HOLD')
+
+        assert result['stop_loss_pct'] == -5.0  # Custom config value
+        assert result['take_profit_pct'] == 8.0   # Custom config value
+        assert result['recheck_trigger_pct'] == 3.0  # Custom config value
+
+    def test_ai_overrides_config_defaults(self):
+        """Test that AI values override config defaults."""
+        thresholds = {
+            'stop_loss_pct': -10.0,  # AI override
+            'take_profit_pct': 15.0,  # AI override
+        }
+        result = PromptBuilder.extract_emergency_thresholds(thresholds, True, 'HOLD')
+
+        assert result['stop_loss_pct'] == -10.0  # AI value wins
+        assert result['take_profit_pct'] == 15.0  # AI value wins
+        assert result['recheck_trigger_pct'] == EMERGENCY_RECHECK_PCT  # Config default
 
 
 class TestPromptBuilderSafeFormat:
