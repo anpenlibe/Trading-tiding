@@ -52,14 +52,14 @@ class PaperTrade:
     reasoning: str
     indicators: Dict[str, float]
 
+    # Status (required field)
+    status: str  # OPEN, CLOSED
+
     # Emergency thresholds (percentages from entry price)
     emergency_stop_loss_pct: float = -3.5  # Default -3.5%
     emergency_take_profit_pct: float = 4.0  # Default +4.0%
     emergency_recheck_pct: float = 2.0      # Default ±2.0%
     ai_monitoring_comment: Optional[str] = None  # AI's reason for monitoring
-    
-    # Status
-    status: str  # OPEN, CLOSED
     exit_price: Optional[float] = None
     exit_timestamp: Optional[str] = None
     exit_reason: Optional[str] = None  # TARGET_HIT, STOP_LOSS, MANUAL

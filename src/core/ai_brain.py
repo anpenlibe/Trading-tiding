@@ -367,7 +367,7 @@ class ClaudeAI(BaseDecisionModel):
             # Parse portfolio response
             try:
                 portfolio_decisions = self.prompt_builder.parse_portfolio_response(
-                    response.content[0].text, portfolio_data
+                    response.content[0].text, portfolio_data, context
                 )
             except json.JSONDecodeError as e:
                 logger.warning(f"Failed to parse Claude portfolio response: {e}")

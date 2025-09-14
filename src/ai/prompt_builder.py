@@ -15,12 +15,42 @@ class PromptBuilder:
     @staticmethod
     def safe_format(value, default=0, decimals=2):
         """Safely format a value that might be None."""
-        if value is None or pd.isna(value):
+        if value is None:
+            value = default
+        elif hasattr(value, '__len__') and not isinstance(value, str):
+            # Handle arrays, lists, etc.
+            value = default
+        elif pd.isna(value):
             value = default
         try:
             return f"{float(value):.{decimals}f}"
         except (ValueError, TypeError):
             return f"{default:.{decimals}f}"
+
+    @staticmethod
+    def extract_emergency_thresholds(thresholds: dict, is_owned: bool, signal: str) -> dict:
+        """Extract thresholds with consistent defaults."""
+        # Apply thresholds if AI provided them, position is owned, or signal is active
+        should_monitor = (
+            any(thresholds.get(key) is not None for key in ['stop_loss_pct', 'take_profit_pct', 'recheck_trigger_pct']) or
+            is_owned or
+            signal in ['BUY', 'SELL']
+        )
+
+        if should_monitor:
+            return {
+                'stop_loss_pct': thresholds.get('stop_loss_pct') if thresholds.get('stop_loss_pct') is not None else -3.5,
+                'take_profit_pct': thresholds.get('take_profit_pct') if thresholds.get('take_profit_pct') is not None else 4.0,
+                'recheck_trigger_pct': thresholds.get('recheck_trigger_pct') if thresholds.get('recheck_trigger_pct') is not None else 2.0,
+                'comment': thresholds.get('comment') or 'Standard monitoring'
+            }
+        else:
+            return {
+                'stop_loss_pct': None,
+                'take_profit_pct': None,
+                'recheck_trigger_pct': None,
+                'comment': None
+            }
     
     @staticmethod
     def create_analysis_prompt(symbol: str, 
@@ -316,7 +346,8 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
 
     @staticmethod
     def parse_portfolio_response(response_text: str,
-                               portfolio_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
+                               portfolio_data: Dict[str, pd.DataFrame],
+                               context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Parse Claude's portfolio response into structured data."""
         try:
             # Find JSON in response
@@ -363,10 +394,19 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
                     stop_loss = decision_data.get('stop_loss')
                     target = decision_data.get('target')
 
-                    # Extract emergency thresholds
+                    # Extract and process emergency thresholds using simplified logic
                     emergency_thresholds = decision_data.get('emergency_thresholds', {})
                     if not isinstance(emergency_thresholds, dict):
                         emergency_thresholds = {}
+
+                    # Check if this is an owned position
+                    current_positions = context.get('current_positions', []) if context else []
+                    is_owned = symbol in current_positions
+
+                    # Use simplified threshold extraction
+                    processed_thresholds = PromptBuilder.extract_emergency_thresholds(
+                        emergency_thresholds, is_owned, signal
+                    )
 
                     decisions[symbol] = {
                         'signal': signal,
@@ -375,14 +415,16 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
                         'entry_price': entry_price,
                         'stop_loss': stop_loss,
                         'target': target,
-                        'emergency_thresholds': {
-                            'stop_loss_pct': emergency_thresholds.get('stop_loss_pct', -3.5),
-                            'take_profit_pct': emergency_thresholds.get('take_profit_pct', 4.0),
-                            'recheck_trigger_pct': emergency_thresholds.get('recheck_trigger_pct', 2.0)
-                        }
+                        'emergency_thresholds': processed_thresholds
                     }
                 else:
                     # Default decision if symbol missing from response
+                    current_positions = context.get('current_positions', []) if context else []
+                    is_owned = symbol in current_positions
+
+                    # Use same simplified threshold logic for defaults
+                    default_thresholds = PromptBuilder.extract_emergency_thresholds({}, is_owned, 'HOLD')
+
                     decisions[symbol] = {
                         'signal': 'HOLD',
                         'confidence': 0.3,
@@ -390,11 +432,7 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
                         'entry_price': None,
                         'stop_loss': None,
                         'target': None,
-                        'emergency_thresholds': {
-                            'stop_loss_pct': -3.5,
-                            'take_profit_pct': 4.0,
-                            'recheck_trigger_pct': 2.0
-                        }
+                        'emergency_thresholds': default_thresholds
                     }
 
             return {
