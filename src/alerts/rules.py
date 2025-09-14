@@ -183,3 +183,69 @@ class MACDCrossRule(AlertRule):
             'histogram': indicators.get('macd_histogram', 0),
             'crossover_direction': self.direction
         }
+
+
+class EmergencyThresholdRule(AlertRule):
+    """Alert when position emergency thresholds are breached."""
+
+    def __init__(self, symbol: str, position_data: dict):
+        super().__init__(
+            name=f"{symbol}_emergency_threshold",
+            alert_type=AlertType.PORTFOLIO,  # Use existing portfolio type
+            condition="emergency_threshold_breach",
+            threshold=0,  # Will calculate dynamically
+            priority=1,  # High priority
+            cooldown_minutes=5  # Short cooldown for emergencies
+        )
+        self.symbol = symbol
+        self.entry_price = position_data.get('entry_price', 0)
+        self.emergency_stop_loss_pct = position_data.get('emergency_stop_loss_pct', -3.5)
+        self.emergency_take_profit_pct = position_data.get('emergency_take_profit_pct', 4.0)
+        self.emergency_recheck_pct = position_data.get('emergency_recheck_pct', 2.0)
+        self.ai_comment = position_data.get('ai_monitoring_comment')
+
+    def check(self, market_data: Dict[str, Any]) -> bool:
+        """Check if emergency thresholds are breached."""
+        if market_data.get('symbol') != self.symbol:
+            return False
+
+        current_price = market_data.get('close', 0)
+        if not self.entry_price or not current_price:
+            return False
+
+        # Calculate percentage change from entry
+        price_change_pct = ((current_price - self.entry_price) / self.entry_price) * 100
+
+        # Check emergency thresholds
+        if price_change_pct <= self.emergency_stop_loss_pct:
+            self.threshold_type = "emergency_stop_loss"
+            return True
+        elif price_change_pct >= self.emergency_take_profit_pct:
+            self.threshold_type = "emergency_take_profit"
+            return True
+        elif abs(price_change_pct) >= self.emergency_recheck_pct:
+            self.threshold_type = "emergency_recheck"
+            return True
+
+        return False
+
+    def get_current_value(self, market_data: Dict[str, Any]) -> float:
+        """Get current price change percentage."""
+        current_price = market_data.get('close', 0)
+        if not self.entry_price or not current_price:
+            return 0
+        return ((current_price - self.entry_price) / self.entry_price) * 100
+
+    def get_metadata(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Get emergency threshold breach metadata."""
+        price_change_pct = self.get_current_value(market_data)
+        return {
+            'entry_price': self.entry_price,
+            'current_price': market_data.get('close', 0),
+            'price_change_pct': price_change_pct,
+            'threshold_type': getattr(self, 'threshold_type', 'unknown'),
+            'ai_comment': self.ai_comment,
+            'emergency_stop_loss_pct': self.emergency_stop_loss_pct,
+            'emergency_take_profit_pct': self.emergency_take_profit_pct,
+            'emergency_recheck_pct': self.emergency_recheck_pct
+        }

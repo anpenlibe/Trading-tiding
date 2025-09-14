@@ -45,12 +45,18 @@ class PaperTrade:
     commission: float
     slippage: float
     position_value: float
-    
+
     # Decision context
     signal_strength: float
     confidence: float
     reasoning: str
     indicators: Dict[str, float]
+
+    # Emergency thresholds (percentages from entry price)
+    emergency_stop_loss_pct: float = -3.5  # Default -3.5%
+    emergency_take_profit_pct: float = 4.0  # Default +4.0%
+    emergency_recheck_pct: float = 2.0      # Default ±2.0%
+    ai_monitoring_comment: Optional[str] = None  # AI's reason for monitoring
     
     # Status
     status: str  # OPEN, CLOSED
@@ -241,6 +247,13 @@ class PaperTrader(BaseTradingExecutor):
                 "reason": f"Insufficient capital. Need ₹{total_cost:.2f}, have ₹{self.available_capital:.2f}"
             }
         
+        # Extract emergency thresholds from signal
+        emergency_thresholds = signal.get('emergency_thresholds', {})
+        emergency_stop_loss_pct = emergency_thresholds.get('stop_loss_pct', -3.5)
+        emergency_take_profit_pct = emergency_thresholds.get('take_profit_pct', 4.0)
+        emergency_recheck_pct = emergency_thresholds.get('recheck_trigger_pct', 2.0)
+        ai_comment = emergency_thresholds.get('comment')
+
         # Create trade record
         trade_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{symbol}_BUY"
         trade = PaperTrade(
@@ -256,6 +269,10 @@ class PaperTrader(BaseTradingExecutor):
             commission=commission,
             slippage=price * PAPER_TRADE_SLIPPAGE,
             position_value=position_value,
+            emergency_stop_loss_pct=emergency_stop_loss_pct,
+            emergency_take_profit_pct=emergency_take_profit_pct,
+            emergency_recheck_pct=emergency_recheck_pct,
+            ai_monitoring_comment=ai_comment,
             signal_strength=signal.get('signal_strength', 0),
             confidence=signal.get('confidence', 0),
             reasoning=signal.get('reasoning', ''),
