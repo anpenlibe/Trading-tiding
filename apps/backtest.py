@@ -268,8 +268,18 @@ class HistoricalSimulator:
             if self.config.enable_ai_brain:
                 # FIXED: Use correct ClaudeAI import
                 from src.core.ai_brain import ClaudeAI
+
+                # Set AI provider and model from config
+                if hasattr(self.config, 'ai_provider'):
+                    os.environ['AI_PROVIDER'] = self.config.ai_provider
+                if hasattr(self.config, 'ai_model'):
+                    if self.config.ai_provider == 'gemini':
+                        os.environ['GEMINI_MODEL'] = self.config.ai_model
+                    elif self.config.ai_provider == 'claude':
+                        os.environ['CLAUDE_MODEL'] = self.config.ai_model
+
                 self.ai_brain = ClaudeAI()
-                logger.info("AI Brain (ClaudeAI) initialized for simulation")
+                logger.info(f"AI Brain initialized - Provider: {self.config.ai_provider if hasattr(self.config, 'ai_provider') else 'default'}, Model: {self.config.ai_model if hasattr(self.config, 'ai_model') else 'default'}")
         except ImportError as e:
             logger.warning(f"AI Brain not available - continuing without AI decisions: {e}")
             self.config.enable_ai_brain = False
@@ -480,7 +490,7 @@ class HistoricalSimulator:
                     # Check if we can actually execute this trade
                     if signal_type == "SELL":
                         if not self.paper_trader.has_position(symbol):
-                            logger.debug(f"Skipping SELL for {symbol} - no position held")
+                            logger.info(f"Skipping SELL for {symbol} - no position held")
                             continue
 
                     # Execute trade if signal is not HOLD
@@ -789,7 +799,38 @@ def main():
             config.enable_ai_brain = True
         else:
             config.enable_ai_brain = False
-        
+
+        # Prompt for simulation interval
+        print("\nSimulation interval options:")
+        print("1. 30 minutes (default)")
+        print("2. 15 minutes")
+        print("3. 5 minutes")
+        print("4. 1 minute")
+        print("5. 1 hour")
+        print("6. Custom interval")
+        interval_choice = input("Choose simulation interval (1-6) [1]: ").strip() or "1"
+
+        if interval_choice == "2":
+            config.simulation_interval_minutes = 15
+        elif interval_choice == "3":
+            config.simulation_interval_minutes = 5
+        elif interval_choice == "4":
+            config.simulation_interval_minutes = 1
+        elif interval_choice == "5":
+            config.simulation_interval_minutes = 60
+        elif interval_choice == "6":
+            custom_interval = input("Enter custom interval in minutes (e.g., 2, 45, 90): ").strip()
+            try:
+                config.simulation_interval_minutes = int(custom_interval)
+                if config.simulation_interval_minutes <= 0:
+                    print("Invalid interval, using default (30 minutes)")
+                    config.simulation_interval_minutes = 30
+            except ValueError:
+                print("Invalid interval format, using default (30 minutes)")
+                config.simulation_interval_minutes = 30
+        else:
+            config.simulation_interval_minutes = 30
+
         if input(f"Enable Paper Trading? (y/n) [y]: ").strip().lower() != 'n':
             config.enable_paper_trading = True
         else:

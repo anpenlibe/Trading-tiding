@@ -1,9 +1,19 @@
-"""AI brain with enhanced error handling."""
+"""AI brain with enhanced error handling - supports Claude and Gemini providers.
+
+TODO: MULTI-MODEL ARCHITECTURE IMPROVEMENTS
+- Implement REST API fallback for Gemini (proven working via curl)
+- Add OpenAI compatibility mode as alternative
+- Consider hybrid approach: SDK first, REST fallback
+- Add model-specific prompt optimization
+- Implement cross-provider response validation
+- Add provider health monitoring and auto-switching
+"""
 
 import time
 from typing import Dict, Any, Optional, List
 import pandas as pd
 import anthropic
+import requests
 import json
 from dataclasses import asdict
 
@@ -12,7 +22,8 @@ from src.ai.prompt_builder import PromptBuilder
 from src.core.risk_manager import SimpleRiskManager
 from src.data.config import (
     ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_MAX_TOKENS, CLAUDE_TEMPERATURE,
-    INITIAL_CAPITAL, MAX_DECISION_HISTORY
+    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE,
+    AI_PROVIDER, INITIAL_CAPITAL, MAX_DECISION_HISTORY
 )
 from src.utils.logger import setup_logger
 from src.utils.retry import retry_with_backoff
@@ -28,24 +39,51 @@ class ClaudeAI(BaseDecisionModel):
     def __init__(self, api_key: Optional[str] = None):
         """Initialize with error handling."""
         try:
-            self.api_key = api_key or ANTHROPIC_API_KEY
-            if not self.api_key:
-                raise ConfigurationError("ANTHROPIC_API_KEY not configured")
-            
-            self.client = anthropic.Anthropic(api_key=self.api_key)
-            self.model = CLAUDE_MODEL
+            # Determine provider from config
+            self.provider = AI_PROVIDER.lower()
+
+            if self.provider == "claude":
+                self._init_claude(api_key)
+            elif self.provider == "gemini":
+                self._init_gemini(api_key)
+            else:
+                raise ConfigurationError(f"Unknown AI provider: {self.provider}")
+
             self.prompt_builder = PromptBuilder()
             self.risk_manager = SimpleRiskManager()
             self.decision_history = []
-            
+
             # Track API failures for circuit breaking
             self.consecutive_failures = 0
             self.max_consecutive_failures = 5
-            
-            logger.info(f"Claude AI initialized with model: {self.model}")
+
+            logger.info(f"AI initialized - Provider: {self.provider}, Model: {self.model}")
         except Exception as e:
-            logger.error(f"Failed to initialize Claude AI: {e}")
+            logger.error(f"Failed to initialize AI: {e}")
             raise AIAnalysisError(f"AI initialization failed: {e}")
+
+    def _init_claude(self, api_key: Optional[str] = None):
+        """Initialize Claude provider."""
+        self.api_key = api_key or ANTHROPIC_API_KEY
+        if not self.api_key:
+            raise ConfigurationError("ANTHROPIC_API_KEY not configured")
+
+        self.client = anthropic.Anthropic(api_key=self.api_key)
+        self.model = CLAUDE_MODEL
+        self.max_tokens = CLAUDE_MAX_TOKENS
+        self.temperature = CLAUDE_TEMPERATURE
+
+    def _init_gemini(self, api_key: Optional[str] = None):
+        """Initialize Gemini provider."""
+        self.api_key = api_key or GEMINI_API_KEY
+        if not self.api_key:
+            raise ConfigurationError("GEMINI_API_KEY not configured")
+
+        # Use REST API instead of SDK (more reliable)
+        self.client = "rest_api"  # Flag to use REST API
+        self.model = GEMINI_MODEL
+        self.max_tokens = GEMINI_MAX_TOKENS
+        self.temperature = GEMINI_TEMPERATURE
     
     def get_required_indicators(self) -> list:
         """Return list of indicators this model needs."""
@@ -104,36 +142,27 @@ class ClaudeAI(BaseDecisionModel):
                 symbol, market_data, indicators, context
             )
             
-            # Get Claude's response with timeout
+            # Get AI response
             try:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=CLAUDE_MAX_TOKENS,
-                    temperature=CLAUDE_TEMPERATURE,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=30.0  # 30 second timeout
-                )
-            except anthropic.APITimeoutError:
-                logger.warning("Claude API timeout - using fallback")
+                response_text = self._get_ai_response(prompt)
+            except Exception as e:
+                # TODO: Rule-based fallback disabled - for testing only
+                # return self._fallback_analysis(latest_data, indicators)
                 self.consecutive_failures += 1
-                return self._fallback_analysis(latest_data, indicators)
-            except anthropic.APIError as e:
-                logger.error(f"Claude API error: {e}")
-                self.consecutive_failures += 1
-                raise
-            
+                raise AIAnalysisError(f"AI analysis failed: {e}")
+
             # Parse response
             try:
                 decision = self.prompt_builder.parse_response(
-                    response.content[0].text, current_price
+                    response_text, current_price
                 )
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse Claude response: {e}")
+                logger.warning(f"Failed to parse {self.provider.capitalize()} response: {e}")
                 return self._safe_default_response("Parse error")
             
             # Validate decision
             if not self._validate_decision(decision):
-                logger.warning("Invalid decision from Claude")
+                logger.warning(f"Invalid decision from {self.provider.capitalize()}")
                 return self._safe_default_response("Invalid decision")
             
             # Add risk parameters
@@ -232,38 +261,109 @@ class ClaudeAI(BaseDecisionModel):
             'risk_amount': None
         }
     
-    @retry_with_backoff(max_retries=2, exceptions=(anthropic.APIError,))
-    def _get_claude_response(self, prompt: str) -> str:
-        """Get response from Claude API with retry logic."""
-        try:
-            start_time = time.time()
-            
-            message = self.client.messages.create(
+    def _get_ai_response(self, prompt: str) -> str:
+        """Get response from configured AI provider."""
+        start_time = time.time()
+
+        if self.provider == "claude":
+            response = self.client.messages.create(
                 model=self.model,
-                max_tokens=CLAUDE_MAX_TOKENS,
-                temperature=CLAUDE_TEMPERATURE,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
+                max_tokens=self.max_tokens,
+                temperature=self.temperature,
+                messages=[{"role": "user", "content": prompt}],
                 timeout=30.0
             )
-            
-            response = message.content[0].text
-            duration = time.time() - start_time
-            
-            logger.info(f"Claude response received in {duration:.2f}s")
-            logger.debug(f"Response: {response[:200]}...")  # Log first 200 chars
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Claude API error: {e}")
-            raise
-    
-    def _log_decision(self, symbol: str, decision: Dict[str, Any], 
+            response_text = response.content[0].text
+
+        elif self.provider == "gemini":
+            response_text = self._call_gemini_rest_api(prompt)
+
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
+
+        duration = time.time() - start_time
+        logger.info(f"{self.provider.capitalize()} response received in {duration:.2f}s")
+        logger.debug(f"Response: {response_text[:200]}...")  # Log first 200 chars
+
+        return response_text
+
+    def _get_portfolio_ai_response(self, prompt: str) -> str:
+        """Get portfolio response from configured AI provider with longer timeout."""
+        if self.provider == "claude":
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=self.max_tokens * 2,  # Increase tokens for portfolio
+                temperature=self.temperature,
+                messages=[{"role": "user", "content": prompt}],
+                timeout=60.0  # Longer timeout for portfolio analysis
+            )
+            return response.content[0].text
+
+        elif self.provider == "gemini":
+            return self._call_gemini_rest_api(prompt, max_tokens=self.max_tokens * 2)
+
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
+
+    def _call_gemini_rest_api(self, prompt: str, max_tokens: int = None) -> str:
+        """Call Gemini using REST API (proven working method)."""
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
+
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": prompt
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": self.temperature,
+                "maxOutputTokens": max_tokens or self.max_tokens,
+                "candidateCount": 1
+            }
+        }
+
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        params = {
+            "key": self.api_key
+        }
+
+        try:
+            response = requests.post(url, json=payload, headers=headers, params=params, timeout=90)
+            response.raise_for_status()
+
+            result = response.json()
+            if "candidates" in result and len(result["candidates"]) > 0:
+                candidate = result["candidates"][0]
+                if "content" in candidate:
+                    content = candidate["content"]
+                    # Handle both structures: with and without parts array
+                    if "parts" in content and len(content["parts"]) > 0:
+                        return content["parts"][0]["text"]
+                    elif "text" in content:
+                        return content["text"]
+                    else:
+                        # Fallback: try to find text anywhere in content
+                        import json
+                        logger.debug(f"Unexpected content structure: {json.dumps(content, indent=2)}")
+                        raise Exception(f"No text found in content: {content}")
+                else:
+                    raise Exception(f"No content in candidate: {candidate}")
+            else:
+                raise Exception(f"No valid candidates in response: {result}")
+
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Gemini REST API error: {e}")
+        except (KeyError, IndexError) as e:
+            raise Exception(f"Failed to parse Gemini response: {e}")
+
+    def _log_decision(self, symbol: str, decision: Dict[str, Any],
                      market_data: pd.DataFrame, indicators: Dict[str, float]):
         """Log trading decision for analysis."""
         try:
@@ -346,31 +446,21 @@ class ClaudeAI(BaseDecisionModel):
                 portfolio_data, portfolio_indicators, context
             )
 
-            # Single Claude API call for all symbols
+            # Single AI API call for all symbols
             try:
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=CLAUDE_MAX_TOKENS * 2,  # Increase tokens for multiple symbols
-                    temperature=CLAUDE_TEMPERATURE,
-                    messages=[{"role": "user", "content": prompt}],
-                    timeout=60.0  # Longer timeout for portfolio analysis
-                )
-            except anthropic.APITimeoutError:
-                logger.warning("Claude API timeout - using fallback for portfolio")
+                response_text = self._get_portfolio_ai_response(prompt)
+            except Exception as e:
+                pass  # Silent fallback for portfolio analysis
                 self.consecutive_failures += 1
                 return self._fallback_portfolio_analysis(portfolio_data, portfolio_indicators)
-            except anthropic.APIError as e:
-                logger.error(f"Claude API error: {e}")
-                self.consecutive_failures += 1
-                raise
 
             # Parse portfolio response
             try:
                 portfolio_decisions = self.prompt_builder.parse_portfolio_response(
-                    response.content[0].text, portfolio_data, context
+                    response_text, portfolio_data, context
                 )
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse Claude portfolio response: {e}")
+                logger.warning(f"Failed to parse {self.provider.capitalize()} portfolio response: {e}")
                 return self._safe_portfolio_default_response(list(portfolio_data.keys()), "Parse error")
 
             # Validate all decisions
@@ -435,13 +525,12 @@ class ClaudeAI(BaseDecisionModel):
                     close=float(data['close'].iloc[-1]),
                     volume=float(data['volume'].iloc[-1])
                 )
-                decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
+                # TODO: Rule-based fallback disabled - for testing only
+                # decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
+                raise Exception(f"Failed to analyze {symbol}")
 
-        return {
-            'market_analysis': 'Fallback rule-based portfolio analysis',
-            'decisions': decisions,
-            'symbols_analyzed': len(decisions)
-        }
+        # This method should not be reached with fallbacks disabled
+        raise Exception("Portfolio analysis failed - all AI methods exhausted")
 
     def _intelligent_fallback_analysis(self, portfolio_data: Dict[str, pd.DataFrame],
                                      portfolio_indicators: Dict[str, Dict[str, float]],
@@ -478,9 +567,10 @@ class ClaudeAI(BaseDecisionModel):
                             critical_symbols_analyzed += 1
                             logger.debug(f"Individual AI analysis successful for owned position: {symbol}")
                         except Exception as individual_error:
-                            logger.debug(f"AI analysis failed for {symbol}, using rule-based fallback: {individual_error}")
-                            decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
-                            critical_symbols_analyzed += 1
+                            logger.debug(f"AI analysis failed for {symbol}: {individual_error}")
+                            # TODO: Rule-based fallback disabled - for testing only
+                            # decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
+                            raise Exception(f"AI analysis failed for {symbol}: {individual_error}")
 
                     except Exception as symbol_error:
                         logger.error(f"Complete analysis failure for owned position {symbol}: {symbol_error}")

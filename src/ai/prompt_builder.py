@@ -135,13 +135,15 @@ CRITICAL: Respond ONLY with a valid JSON object in this exact format:
     "confidence": 0.75,
     "reasoning": "Brief explanation of your analysis",
     "entry_price": {current_price:.2f},
-    "stop_loss": null,
-    "target": null
+    "stop_loss": {current_price * 0.985:.2f},
+    "target": {current_price * 1.03:.2f}
 }}
 
 Valid signals: BUY, SELL, HOLD
 Confidence: 0.0 to 1.0
-For HOLD signals, set stop_loss and target to null.
+For BUY: Set stop_loss below entry_price, target above entry_price (or null for system defaults)
+For SELL: Set stop_loss above entry_price, target below entry_price (or null for system defaults)
+For HOLD: Set stop_loss and target to null.
 
 Remember: We're swing trading with limited capital (₹{context.get('capital', INITIAL_CAPITAL)}), so capital preservation is crucial. Only suggest BUY/SELL with high confidence setups (confidence > 0.6). For lower confidence, use HOLD."""
         
@@ -328,9 +330,9 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
             }}
         }}{comma}"""
 
-        prompt += """
-    }
-}
+        prompt += f"""
+    }}
+}}
 
 Valid signals: BUY, SELL, HOLD
 Confidence: 0.0 to 1.0
