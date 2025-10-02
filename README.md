@@ -1,33 +1,12 @@
-# 🚨 Claude AI Trading System - SYSTEM BROKEN
+# 🤖 AI Trading System
 
-**AI-Powered Trading Bot with Event-Driven Architecture**
-**Status**: ❌ FUNDAMENTALLY BROKEN - ZERO TRADES POSSIBLE
-**Critical Issue**: Position sizing algorithm prevents all trades
-**AI**: Claude 3.5 Sonnet (works) | **Integration**: BROKEN | **Trade Capability**: 0%  
+**AI-Powered Trading Bot for NSE Indian Stock Market**
 
----
-
-## 🚨 CRITICAL WARNING: SYSTEM CANNOT TRADE
-
-**This system is FUNDAMENTALLY BROKEN and cannot execute any trades** due to critical flaws in the position sizing algorithm. While individual components work correctly, the integration pipeline fails completely.
-
-**DO NOT ATTEMPT TRADING** until fundamental fixes are implemented.
-
-### **Actual System Status**
-- **✅ AI Trading Decisions**: Claude 3.5 Sonnet works correctly (generates proper signals)
-- **❌ Event-Driven Trading**: Never reaches execution due to risk manager failures
-- **🚨 Risk Management**: BROKEN - Position sizing algorithm creates oversized positions
-- **❌ Trading Capability**: ZERO trades possible due to integration failure
-- **❌ Paper Trading**: Never reached due to validation failures
-- **📈 24 NSE Stocks**: Data collection works, but trading pipeline broken
+Automated trading system using AI (Claude/Gemini) for market analysis and decision making with comprehensive risk management.
 
 ---
 
-## ⚠️ CRITICAL: DO NOT USE FOR TRADING
-
-**Before reading further**: This system CANNOT execute trades. The quick start will appear to work but will execute ZERO trades due to fundamental bugs. See `/system_analysis/TESTING_BASED_SYSTEM_ANALYSIS.md` for technical details.
-
-## 🚀 Quick Start (Will Demonstrate Broken System)
+## 🚀 Quick Start
 
 ### **1. Installation**
 ```bash
@@ -42,21 +21,25 @@ cp .env.template .env
 
 ### **2. Configuration (.env file)**
 ```bash
-# Required: Claude AI API Key (get from anthropic.com)
-ANTHROPIC_API_KEY=your_claude_api_key
+# Required: AI API Key (supports both Claude and Gemini)
+GEMINI_API_KEY=your_gemini_api_key     # Google AI Studio
+ANTHROPIC_API_KEY=your_claude_api_key  # Anthropic Console
+
+# Gemini model selection
+GEMINI_MODEL=gemini-1.5-flash          # Fast for testing
+# GEMINI_MODEL=gemini-2.0-flash-exp    # For production
 
 # Optional: Live NSE data (otherwise uses realistic mock data)
 ZERODHA_API_KEY=your_zerodha_key        # From Kite Connect dashboard
 ZERODHA_API_SECRET=your_zerodha_secret  # From Kite Connect dashboard
-# Note: ZERODHA_ACCESS_TOKEN is auto-generated - see below
 
 # Trading parameters (optional - good defaults provided)
 INITIAL_CAPITAL=10000
 MAX_RISK_PER_TRADE=0.015  # 1.5% risk per trade
 ```
 
-### **2.5. Generate Zerodha Access Token (For Live Data)**
-If you want live NSE market data, generate your Zerodha access token:
+### **3. Generate Zerodha Access Token (Optional - For Live Data)**
+If you want live NSE market data:
 
 ```bash
 # Automated token generation (handles OAuth flow)
@@ -64,14 +47,14 @@ python scripts/generate_zerodha_token.py
 
 # The script will:
 # 1. Open browser to Zerodha login
-# 2. Handle OAuth authentication  
+# 2. Handle OAuth authentication
 # 3. Save token to your .env automatically
 # 4. Verify token works with test data fetch
 ```
 
 **📝 Note**: Zerodha tokens expire daily and need renewal. Re-run the script when you see "Unauthorized" errors.
 
-### **3. Run Your First Trading Session**
+### **4. Run Your First Trading Session**
 ```bash
 # Quick system check
 python apps/health_check.py
@@ -83,26 +66,24 @@ python apps/trader.py
 python apps/backtest.py
 ```
 
-**🎉 That's it! The system will start analyzing markets and making trading decisions.**
-
 ---
 
-## 📱 Applications Overview
+## 📱 Applications
 
-| **Application** | **Purpose** | **Use Case** |
-|-----------------|-------------|--------------|
-| **`trader.py`** | Main trading system | Live/paper trading with Claude AI |
-| **`backtest.py`** | Historical simulation | Test strategies on historical data |
-| **`data_collector.py`** | Data management | Collect and maintain market data |
-| **`monitor.py`** | System monitoring | Real-time performance dashboard |
-| **`health_check.py`** | System validation | Verify system health and setup |
+| **Application** | **Purpose** | **Command** |
+|-----------------|-------------|-------------|
+| **`trader.py`** | Main trading system | `python apps/trader.py` |
+| **`backtest.py`** | Historical simulation | `python apps/backtest.py` |
+| **`data_collector.py`** | Data management | `python apps/data_collector.py` |
+| **`monitor.py`** | System monitoring | `python apps/monitor.py` |
+| **`health_check.py`** | System validation | `python apps/health_check.py` |
 
 ### **Daily Usage Examples**
 ```bash
 # Morning: Check system health and update data
 python apps/health_check.py && python apps/data_collector.py
 
-# Start trading in alert mode (recommended - 80% more efficient)
+# Start trading in alert mode (recommended - more efficient)
 python apps/trader.py --mode alert
 
 # Monitor performance in another terminal
@@ -115,10 +96,10 @@ python apps/monitor.py --continuous
 
 **This system includes comprehensive safeguards to prevent financial losses:**
 
-🛡️ **Mock Data Protection**: Automatically prevents fake data in live trading mode  
-🔐 **Live Trading Confirmation**: Requires explicit user confirmation for real money trading  
-📡 **Data Source Validation**: Only authenticated live data sources allowed in live mode  
-⚠️ **API Failure Protection**: Prevents trading if no live data APIs are available  
+🛡️ **Mock Data Protection**: Automatically prevents fake data in live trading mode
+🔐 **Live Trading Confirmation**: Requires explicit user confirmation for real money trading
+📡 **Data Source Validation**: Only authenticated live data sources allowed in live mode
+⚠️ **API Failure Protection**: Prevents trading if no live data APIs are available
 
 **⚠️ IMPORTANT**: Always start with paper trading mode to test the system safely.
 
@@ -136,19 +117,19 @@ TRADING_MODE=live python apps/trader.py
 
 ### **1. Market Analysis**
 - **Real-time data**: Collects OHLCV data from NSE stocks
-- **Technical indicators**: Calculates RSI, MACD, SMA automatically  
+- **Technical indicators**: Calculates RSI, MACD, SMA automatically
 - **Market context**: Builds comprehensive market analysis prompts
 
-### **2. Claude AI Decision Making**
-- **Intelligent analysis**: Claude 3.5 Sonnet analyzes market conditions
+### **2. AI Decision Making**
+- **Intelligent analysis**: Claude AI or Gemini analyzes market conditions (configurable)
 - **Confidence scoring**: Each decision includes confidence level (0-100%)
 - **Detailed reasoning**: AI explains why it made each decision
 - **Risk awareness**: Considers portfolio and risk factors
 
 ### **3. Risk Management**
 - **Position sizing**: Kelly Criterion-inspired calculations
-- **Stop losses**: Automatic 5% stop loss (configurable)
-- **Portfolio limits**: Max 25% per stock, 40% per sector
+- **Stop losses**: Automatic stop loss (configurable)
+- **Portfolio limits**: Max position per stock and sector
 - **Risk per trade**: Maximum 1.5% capital risk per trade
 
 ### **4. Trade Execution**
@@ -160,17 +141,17 @@ TRADING_MODE=live python apps/trader.py
 
 ## ⚡ Event-Driven Alert System
 
-**Revolutionary efficiency improvement**: Instead of checking markets every 5 minutes, the alert system monitors continuously but only triggers AI analysis when significant events occur.
+Instead of checking markets every 5 minutes, the alert system monitors continuously but only triggers AI analysis when significant events occur.
 
 ### **Alert Types**
-- **📈 Price Alerts**: 2% price movements up/down
+- **📈 Price Alerts**: Significant price movements
 - **📊 RSI Extremes**: Overbought (>70) or oversold (<30)
-- **📈 Volume Spikes**: 2x normal volume activity
+- **📈 Volume Spikes**: 2x+ normal volume activity
 - **🔄 MACD Crossovers**: Bullish/bearish signal crossovers
 
 ### **Efficiency Gains**
 - **80% fewer API calls**: Only analyze when markets move significantly
-- **Cost reduction**: From $125/month to <$30/month
+- **Cost reduction**: Significant reduction in API costs
 - **Faster response**: <1 minute from alert to action
 - **Better decisions**: Focus on meaningful market events only
 
@@ -181,70 +162,44 @@ python apps/trader.py --mode alert
 
 ---
 
-## 📊 System Performance
-
-### **Backtesting Results**
-- **Win Rate**: 70%+ in historical backtesting
-- **Sharpe Ratio**: 1.8+ (excellent risk-adjusted returns)
-- **Max Drawdown**: <5% typical
-- **Response Time**: <1 second for AI decisions
-
-### **Cost Efficiency** 
-- **Monthly Cost**: <$30 (vs $125 with continuous polling)
-- **API Calls**: ~2,000/month (vs 13,200 with old approach)
-- **Cost per Decision**: ~$0.015 (vs $0.38 previously)
-
-### **Reliability**
-- **Uptime**: 99.9%+ system availability
-- **Error Recovery**: Automatic fallback to mock data
-- **Data Quality**: Multi-level validation and quality checks
-
----
-
 ## 🏗️ System Architecture
 
 ```
 📱 Applications Layer     → apps/          (Trading, Backtesting, Monitoring)
 🧠 Business Logic Layer  → src/core/      (AI, Risk, Trading, Analysis)
 📊 Data Layer           → src/data/       (APIs, Database, Configuration)
-⚡ Alert System         → src/alerts/     (Event Detection, Rules, Monitoring)  
+⚡ Alert System         → src/alerts/     (Event Detection, Rules, Monitoring)
 🤖 AI Components        → src/ai/         (Prompt Engineering)
 📈 Monitoring          → src/monitoring/ (Performance, Error Tracking)
 🔧 Utilities           → src/utils/      (Logging, Database Optimization)
-🧪 Testing Suite       → tests/          (42 automated tests)
+🧪 Testing Suite       → tests/          (Automated tests)
 ```
 
 ---
 
-## 💰 Supported Stocks & Strategies
+## 💰 Supported Stocks
 
-### **24 NSE Stocks Across 8 Sectors**
+### **20 NSE Stocks Across 8 Sectors**
 - **Banking**: HDFC Bank, ICICI Bank, State Bank, Axis Bank, Kotak Bank, IndusInd
 - **Technology**: TCS, Infosys, Wipro, HCL Tech
 - **Energy**: Reliance Industries, ONGC, BPCL
 - **Automobile**: Maruti Suzuki, Tata Motors, Bajaj Auto
 - **FMCG**: Hindustan Unilever, ITC
 - **Pharma**: Sun Pharma, Dr Reddy's
-- **Telecom**: Bharti Airtel, Reliance Jio
-- **Metals**: Tata Steel, Hindalco
+- **Telecom**: Bharti Airtel
+- **Metals**: Tata Steel
 
 ### **Portfolio Strategies**
-- **Conservative**: Large-cap, high-liquidity stocks (8 stocks)
-- **Swing Trading**: Medium volatility stocks (12 stocks)  
-- **Diversified**: Cross-sector spread (16 stocks)
-- **Tech Focused**: Technology and growth stocks (10 stocks)
+- **Conservative**: Large-cap, high-liquidity stocks
+- **Swing Trading**: Medium volatility stocks
+- **Diversified**: Cross-sector spread
+- **Tech Focused**: Technology and growth stocks
 
 ---
 
 ## 🧪 Testing & Quality
 
-### **Comprehensive Test Suite**
-- **42 automated tests** covering all functionality
-- **95%+ code coverage** on critical trading modules
-- **Unit tests**: Individual component testing
-- **Integration tests**: End-to-end workflow testing
-- **Performance tests**: Speed and resource optimization
-
+### **Test Suite**
 ```bash
 # Run complete test suite
 python run_tests.py
@@ -267,7 +222,7 @@ MAX_RISK_PER_TRADE=0.015     # 1.5% max risk per trade
 STOP_LOSS_PERCENT=0.05       # 5% stop loss
 TAKE_PROFIT_PERCENT=0.08     # 8% take profit
 
-# Position Limits  
+# Position Limits
 MAX_POSITIONS=8              # Max open positions
 MAX_POSITION_SIZE=0.25       # 25% max per stock
 
@@ -291,24 +246,17 @@ DB_OPTIMIZATION_ENABLED=true # Auto database optimization
 
 ---
 
-## 📚 Documentation System
+## 📚 Documentation
 
-### **📋 Navigation Hub**
-- **[SYSTEM_STATUS.md](./SYSTEM_STATUS.md)** - **⭐ CENTRAL TRACKING HUB** - Single source of truth
-- **[PROJECT_TOC.md](./PROJECT_TOC.md)** - Central navigation for all documentation  
-- **[SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md)** - Architecture lookup table for changes
-- **[PROJECT_MAP.md](./PROJECT_MAP.md)** - Current system structure and components
+### **Technical Documentation**
+- **[docs/SYSTEM_FLOW.md](./docs/SYSTEM_FLOW.md)** - System flow and architecture
+- **[docs/ALERT_BASED_TRADING_SYSTEM.md](./docs/ALERT_BASED_TRADING_SYSTEM.md)** - Alert system details
+- **[docs/api/](./docs/api/)** - API documentation for all modules
+- **[docs/research/](./docs/research/)** - Research and reference materials
 
-### **📂 Directory Documentation**
-- **[apps/README.md](./apps/README.md)** - Application usage guide
-- **[src/core/README.md](./src/core/README.md)** - Core trading logic modules
-- **[src/data/README.md](./src/data/README.md)** - Data handling and configuration
-- **[tests/README.md](./tests/README.md)** - Testing guide and coverage
-
-### **🔧 Development**
-- **[CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md)** - Development guidelines and rules
-- **[docs/api/](./docs/api/)** - Auto-generated API documentation
-- **[docs/](./docs/)** - Phase documentation and development history
+### **System Analysis**
+- **[COMPREHENSIVE_CLAIMS_TO_VERIFY.md](./COMPREHENSIVE_CLAIMS_TO_VERIFY.md)** - System testing and verification results
+- **[system_analysis/reports/ai_position_enforcement_proposal.md](./system_analysis/reports/ai_position_enforcement_proposal.md)** - Feature proposals
 
 ---
 
@@ -317,9 +265,9 @@ DB_OPTIMIZATION_ENABLED=true # Auto database optimization
 ### **Common Issues**
 | **Problem** | **Solution** | **Details** |
 |-------------|-------------|-------------|
-| **"No API key"** | Add `ANTHROPIC_API_KEY` to `.env` | Get free key from anthropic.com |
+| **"No API key"** | Add `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` to `.env` | Get from anthropic.com or Google AI Studio |
 | **"Unauthorized" / "Token expired"** | Run `python scripts/generate_zerodha_token.py` | Zerodha tokens expire daily |
-| **"No trading signals"** | Check internet connection | System needs Claude API access |
+| **"No trading signals"** | Check internet connection | System needs AI API access |
 | **"Tests failing"** | Run `python apps/health_check.py` | Comprehensive system diagnosis |
 | **"Poor performance"** | Enable alert mode | `python apps/trader.py --mode alert` |
 | **"Data collection errors"** | Use mock data fallback | System works without live data APIs |
@@ -338,76 +286,31 @@ tail -f data/logs/claude_trader.log
 
 ---
 
-## 📈 Future Improvements to Track
-
-Based on comprehensive system analysis, here are critical enhancements identified:
-
-### **🧠 AI Context Memory**
-- **Issue**: AI cannot track past decisions or maintain context
-- **Solution**: Implement decision history storage (possibly with ChromaDB)
-- **Impact**: Better decision quality through learning from outcomes
-
-### **🔄 Test Suite Renewal**
-- **Issue**: Tests may be outdated after Phase 3 refactoring
-- **Solution**: Comprehensive test suite update and validation
-- **Impact**: Ensure all new functionality is properly tested
-
-### **📊 Multi-Timestamp Data**
-- **Issue**: AI needs historical context (multiple timestamps)
-- **Solution**: Enhance data fetching to provide rolling windows
-- **Impact**: Better AI analysis with temporal context
-
-### **🔌 Fallback API**
-- **Issue**: Need backup data source beyond MockAPI
-- **Solution**: Integrate Yahoo Finance or Alpha Vantage as fallback
-- **Impact**: Higher reliability when primary sources fail
-
-### **📦 Stock Abstraction**
-- **Issue**: Stocks may be hardcoded in places
-- **Solution**: Full abstraction through stock_registry
-- **Impact**: Easy to add/remove stocks, support multiple markets
-
----
-
 ## 🔒 Security & Compliance
 
-- **Environment-based secrets**: All API keys in `.env` file
+- **Environment-based secrets**: All API keys in `.env` file (never committed)
 - **No hardcoded credentials**: Zero secrets in source code
 - **Comprehensive error handling**: Graceful failure management
 - **Automatic fallbacks**: System continues operating during failures
 - **Data validation**: Multi-level data quality and integrity checks
+- **Trading mode safety**: Prevents accidental live trading with test data
 
 ---
 
-## 📞 Support & Community
+## 📞 Support
 
 ### **Getting Started Issues**
 1. **Check**: `python apps/health_check.py`
-2. **Verify**: `.env` file has `ANTHROPIC_API_KEY`
+2. **Verify**: `.env` file has `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`
 3. **Test**: `python apps/trader.py --cycles 1`
 4. **Monitor**: `python apps/monitor.py`
 
-### **Documentation First**
-- **Start here**: [PROJECT_TOC.md](./PROJECT_TOC.md) for navigation
-- **System changes**: [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) lookup table
-- **Development**: [CLAUDE_CODE_RULES.md](./CLAUDE_CODE_RULES.md) for coding standards
+### **System Requirements**
+- Python 3.8+
+- 100MB+ free disk space
+- Internet connection for API access
+- (Optional) Zerodha Kite Connect account for live data
 
 ---
 
-## 🎯 Success Metrics
-
-### **Trading Performance**
-- **✅ Win Rate**: Target >65% (currently achieving 70%+)
-- **✅ Risk Management**: Max 2% daily portfolio loss
-- **✅ Efficiency**: <$30/month operational cost
-- **✅ Reliability**: 99.9%+ system uptime
-
-### **System Quality**  
-- **✅ Test Coverage**: >90% on critical modules
-- **✅ Documentation**: Complete user and developer guides
-- **✅ Performance**: <1 second AI decision time
-- **✅ Scalability**: Support for 50+ symbols without linear cost increase
-
----
-
-**⚠️ SYSTEM BROKEN: Do NOT attempt trading until fundamental fixes are implemented. See `system_analysis/TESTING_BASED_SYSTEM_ANALYSIS.md` for detailed issue analysis and required fixes.**
+**Built with Claude AI / Gemini for intelligent market analysis**
