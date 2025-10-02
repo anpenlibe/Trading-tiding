@@ -496,3 +496,100 @@ For each claim:
 - [ ] Database indexes for performance
 - [ ] Token refresh automation
 - [ ] ONGC data collection (may already be done)
+
+---
+
+## 🐍 PYTHON MODULES TO REVIEW
+
+**Review Date**: 2025-10-02
+**Status**: Potentially unused modules identified
+
+### Modules Not Imported Anywhere (Safe to Delete?)
+
+#### 1. `src/core/ai_factory.py`
+**Purpose**: Factory pattern for creating AI brain instances (Claude/Gemini)
+**Status**: ❌ Not imported anywhere
+**Verification**: `grep -r "ai_factory" --include="*.py" . | grep -v venv` → No results
+**Note**: May have been planned but never integrated into apps
+**Action**: Review if factory pattern is needed for AI provider switching
+
+#### 2. `src/monitoring/error_tracker.py`
+**Purpose**: Error tracking and pattern analysis
+**Status**: ❌ Not imported anywhere
+**Verification**: `grep -r "error_tracker" --include="*.py" . | grep -v venv` → No results
+**Note**: May be incomplete feature
+**Action**: Review if error tracking is needed, otherwise delete
+
+#### 3. `src/alerts/monitor.py`
+**Purpose**: Alert monitoring dashboard/functionality
+**Status**: ❌ Not imported anywhere
+**Verification**: `grep -r "from src.alerts.monitor" --include="*.py" . | grep -v venv` → No results
+**Note**: May be confused with `apps/monitor.py` (which IS used)
+**Action**: Review if alerts need separate monitoring, otherwise delete
+
+#### 4. `optimize_system.py` (root directory)
+**Purpose**: System optimization runner script
+**Status**: ⚠️ Standalone script
+**Dependencies**: Uses `src.monitoring.dashboard` and `src.utils.db_optimizer`
+**Size**: 476 bytes
+**Action**: Test if it works, keep if useful for maintenance tasks
+
+### All Other Modules: ✅ VERIFIED IN USE
+
+**Core modules** (used by trader.py, backtest.py):
+- ai_brain.py, risk_manager.py, paper_trader.py, indicator_engine.py
+
+**Trading safety** (used by data_collector.py):
+- trading_modes.py (critical safety system)
+
+**Data pipeline** (used throughout):
+- data_collector.py, database.py, cache.py, validator.py, config.py, stock_registry.py, data_sources.py
+
+**AI components** (used by ai_brain):
+- prompt_builder.py
+
+**Alert system** (used by trader.py):
+- alert_engine.py, rules.py
+
+**Monitoring** (used by apps):
+- performance.py, dashboard.py
+
+**Utilities** (used throughout):
+- logger.py, retry.py, db_optimizer.py
+
+**Applications** (all actively used):
+- trader.py, backtest.py, data_collector.py, monitor.py, health_check.py
+
+---
+
+## 🧪 TEST FILES TO REVIEW
+
+**Review Date**: 2025-10-02
+**User Feedback**: "All of them feel useless to me, i never use em"
+
+### All Test Files Found
+
+**Integration tests** (tests/integration/):
+- `test_system_integration.py` - 3 tests for complete workflow
+
+**Unit tests** (tests/unit/):
+- `test_risk_manager.py` - Risk calculation tests
+- `test_paper_trader.py` - Paper trading tests
+- `test_prompt_builder.py` - AI prompt tests
+- `test_ai_brain.py` - AI brain tests
+- `test_data_collection.py` - Data pipeline tests
+- `test_config.py` - Configuration tests
+- `test_indicator_engine.py` - Technical indicator tests
+
+**Alert tests** (tests/):
+- `test_alerts.py` - Alert system tests
+
+**Total**: 60 tests collected by pytest
+
+### Options
+
+1. **Delete all tests** - Never used, adds maintenance burden
+2. **Keep for CI/CD** - Useful if setting up automated testing later
+3. **Keep critical tests only** - e.g., risk_manager, paper_trader safety tests
+
+**Recommendation**: Mark for deletion since not actively used or maintained
