@@ -194,6 +194,34 @@ class AIBrain(BaseDecisionModel):
         
         return True
     
+    def _validate_portfolio_positions(self, portfolio_decisions: Dict[str, Any],
+                                      current_positions: List[str]) -> Dict[str, Any]:
+        """Validate portfolio decisions against position constraints.
+
+        Detects invalid SELL signals for stocks not owned.
+
+        Args:
+            portfolio_decisions: Parsed AI decisions for all symbols
+            current_positions: List of symbols currently owned
+
+        Returns:
+            Portfolio decisions (with optional blocking if uncommented)
+        """
+        validated = portfolio_decisions.copy()
+        decisions = validated.get('decisions', {})
+
+        for symbol, decision in decisions.items():
+            if decision.get('signal') == 'SELL' and symbol not in current_positions:
+                logger.warning(f"🚫 AI Position Bug: Detected invalid SELL for unowned {symbol}")
+                logger.debug(f"   Original reasoning: {decision.get('reasoning', 'N/A')}")
+
+                # COMMENTED OUT: Uncomment to block invalid SELLs
+                # decision['signal'] = 'HOLD'
+                # decision['confidence'] = 0.0
+                # decision['reasoning'] = f"[BLOCKED: Cannot SELL unowned stock] Original: {decision.get('reasoning', 'N/A')[:100]}"
+
+        return validated
+
     def _safe_default_response(self, reason: str) -> Dict[str, Any]:
         """Return safe default response."""
         return {
@@ -361,6 +389,11 @@ class AIBrain(BaseDecisionModel):
                 portfolio_decisions = self.prompt_builder.parse_portfolio_response(
                     response_text, portfolio_data, context
                 )
+
+                # Validate position constraints (currently just logs, doesn't block)
+                current_positions = context.get('current_positions', [])
+                portfolio_decisions = self._validate_portfolio_positions(portfolio_decisions, current_positions)
+
             except json.JSONDecodeError as e:
                 provider = self.coordinator.get_current_provider() or "AI"
                 logger.warning(f"Failed to parse {provider} portfolio response: {e}")

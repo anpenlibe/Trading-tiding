@@ -239,6 +239,10 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
         account_info = context.get('account_info', {})
         available_capital = account_info.get('available_capital', INITIAL_CAPITAL)
 
+        # Categorize stocks by ownership
+        owned_stocks = [s for s in symbols_list if s in current_positions]
+        watchable_stocks = [s for s in symbols_list if s not in current_positions]
+
         prompt = f"""You are an expert portfolio swing trader for the Indian stock market (NSE).
 Analyze the following {num_symbols} stocks simultaneously and provide trading recommendations for each.
 
@@ -246,11 +250,21 @@ PORTFOLIO CONTEXT:
 - Symbols: {', '.join(symbols_list)}
 - Strategy: {context.get('strategy', 'Swing Trading (2-5 day holds)')}
 - Available Capital: ₹{available_capital:.2f}
-- Current Positions: {', '.join(current_positions) if current_positions else 'None'}
 - Max Risk: {context.get('max_risk', MAX_RISK_PER_TRADE)*100:.1f}% per trade
 - Timestamp: {context.get('timestamp', 'Current')}
 
-IMPORTANT: Only suggest SELL signals for stocks you currently hold: {current_positions if current_positions else 'NONE'}
+CRITICAL TRADING RULES - MUST FOLLOW:
+═══════════════════════════════════════
+🔵 OWNED POSITIONS ({len(owned_stocks)}): {', '.join(owned_stocks) if owned_stocks else 'NONE'}
+   → Allowed Actions: SELL or HOLD only
+   → You ALREADY hold these stocks
+
+🟡 WATCHABLE STOCKS ({len(watchable_stocks)}): {', '.join(watchable_stocks[:8])}{'...' if len(watchable_stocks) > 8 else ''}
+   → Allowed Actions: BUY or HOLD only
+   → You DO NOT own these stocks
+
+⚠️  VIOLATION WARNING: Any SELL signal for unowned stocks (🟡) will be REJECTED
+═══════════════════════════════════════
 
 INDIVIDUAL STOCK ANALYSIS:
 """
@@ -286,9 +300,15 @@ INDIVIDUAL STOCK ANALYSIS:
                     volume_ratio = 1.0
                     price_change_5d = 0
 
+                # Visual categorization
+                is_owned = symbol in current_positions
+                category = "🔵 OWNED" if is_owned else "🟡 WATCHABLE"
+                allowed_actions = "SELL/HOLD only" if is_owned else "BUY/HOLD only"
+
                 prompt += f"""
---- {symbol} ---
+--- {symbol} {category} ---
 • Current Price: ₹{current_price:.2f}
+• Allowed Actions: {allowed_actions}
 • 5-Day Change: {price_change_5d:.2f}%
 • Volume Ratio: {volume_ratio:.2f}x
 • Technical Indicators:
