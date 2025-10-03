@@ -239,9 +239,11 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
         account_info = context.get('account_info', {})
         available_capital = account_info.get('available_capital', INITIAL_CAPITAL)
 
-        # Categorize stocks by ownership
+        # Categorize stocks by ownership and watchlist
         owned_stocks = [s for s in symbols_list if s in current_positions]
-        watchable_stocks = [s for s in symbols_list if s not in current_positions]
+        previous_watchlist = context.get('watchlist', [])
+        watchlist_stocks = [s for s in symbols_list if s in previous_watchlist and s not in current_positions]
+        remaining_stocks = [s for s in symbols_list if s not in current_positions and s not in previous_watchlist]
 
         prompt = f"""You are an expert portfolio swing trader for the Indian stock market (NSE).
 Analyze the following {num_symbols} stocks simultaneously and provide trading recommendations for each.
@@ -258,13 +260,28 @@ CRITICAL TRADING RULES - MUST FOLLOW:
 🔵 OWNED POSITIONS ({len(owned_stocks)}): {', '.join(owned_stocks) if owned_stocks else 'NONE'}
    → Allowed Actions: SELL or HOLD only
    → You ALREADY hold these stocks
+   → REVISE emergency thresholds each cycle based on current market conditions
 
-🟡 WATCHABLE STOCKS ({len(watchable_stocks)}): {', '.join(watchable_stocks[:8])}{'...' if len(watchable_stocks) > 8 else ''}
+🟣 WATCHLIST ({len(watchlist_stocks)}): {', '.join(watchlist_stocks) if watchlist_stocks else 'NONE'}
+   → Stocks YOU flagged for close monitoring
    → Allowed Actions: BUY or HOLD only
-   → You DO NOT own these stocks
+   → YOU MAINTAIN THIS LIST - add/remove stocks as you see fit
+   → Set custom alert thresholds for entry opportunities
 
-⚠️  VIOLATION WARNING: Any SELL signal for unowned stocks (🟡) will be REJECTED
+🟡 REMAINING ({len(remaining_stocks)}): {', '.join(remaining_stocks[:8])}{'...' if len(remaining_stocks) > 8 else ''}
+   → Allowed Actions: BUY or HOLD only
+   → Add promising stocks to WATCHLIST for monitoring
+
+⚠️  VIOLATION WARNING: Any SELL signal for unowned stocks (🟣/🟡) will be REJECTED
 ═══════════════════════════════════════
+
+YOUR WATCHLIST RESPONSIBILITIES:
+1. MAINTAIN: Add stocks showing potential, remove when no longer interesting
+2. MONITOR: Set custom alert thresholds (price levels, RSI, volume, etc.)
+3. EXPLAIN: Provide clear reason why each stock is on watchlist
+4. REVISE: Update thresholds for owned positions each cycle
+5. CONTEXT: Between scheduled cycles (90min), system monitors 🔵 OWNED + 🟣 WATCHLIST every 5 minutes
+6. ALERTS: When threshold triggers, you'll get emergency analysis request for that stock + all owned positions
 
 INDIVIDUAL STOCK ANALYSIS:
 """
@@ -300,10 +317,19 @@ INDIVIDUAL STOCK ANALYSIS:
                     volume_ratio = 1.0
                     price_change_5d = 0
 
-                # Visual categorization
+                # Visual categorization with watchlist
                 is_owned = symbol in current_positions
-                category = "🔵 OWNED" if is_owned else "🟡 WATCHABLE"
-                allowed_actions = "SELL/HOLD only" if is_owned else "BUY/HOLD only"
+                is_watchlist = symbol in watchlist_stocks
+
+                if is_owned:
+                    category = "🔵 OWNED"
+                    allowed_actions = "SELL/HOLD only"
+                elif is_watchlist:
+                    category = "🟣 WATCHLIST"
+                    allowed_actions = "BUY/HOLD only (on YOUR watchlist)"
+                else:
+                    category = "🟡 REMAINING"
+                    allowed_actions = "BUY/HOLD only"
 
                 prompt += f"""
 --- {symbol} {category} ---
@@ -326,10 +352,14 @@ ANALYSIS REQUIREMENTS:
 3. Ensure proper diversification in recommendations
 4. Apply consistent risk management across all positions
 5. Only suggest BUY/SELL with high confidence (>0.6)
+6. MAINTAIN YOUR WATCHLIST: Add promising stocks, remove when no longer interesting
+7. For 🔵 OWNED: Always provide revised emergency_thresholds (percentage-based)
+8. For 🟣 WATCHLIST: Set watchlist=true and provide alert_conditions (absolute values)
 
 CRITICAL: Respond with a valid JSON object in this EXACT format:
 {{
     "market_analysis": "Brief overall market view and portfolio insights",
+    "watchlist": ["SYMBOL1", "SYMBOL2"],
     "decisions": {{"""
 
         # Add expected decision format - show one example, apply to all symbols
@@ -341,6 +371,8 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
             "signal": "BUY/SELL/HOLD",
             "confidence": 0.75,
             "reasoning": "Brief analysis for {first_symbol}",
+            "watchlist": false,
+            "watchlist_reason": null,
             "entry_price": null,
             "stop_loss": null,
             "take_profit": null,
@@ -348,25 +380,29 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
                 "stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT},
                 "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT},
                 "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}
-            }}
+            }},
+            "alert_conditions": null
         }}"""
 
         if remaining_symbols:
             prompt += f""",
         ... (apply same format for: {', '.join(remaining_symbols)})
 
-        Example for remaining symbols:
-        "SYMBOL": {{
-            "signal": "BUY/SELL/HOLD",
-            "confidence": 0.XX,
-            "reasoning": "Brief analysis",
-            "entry_price": price_or_null,
+        Example for 🟣 WATCHLIST stock:
+        "TCS": {{
+            "signal": "HOLD",
+            "confidence": 0.65,
+            "reasoning": "Strong fundamentals, waiting for entry",
+            "watchlist": true,
+            "watchlist_reason": "Wait for pullback to ₹3,150 or RSI oversold",
+            "entry_price": null,
             "stop_loss": null,
             "take_profit": null,
-            "emergency_thresholds": {{
-                "stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT},
-                "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT},
-                "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}
+            "emergency_thresholds": null,
+            "alert_conditions": {{
+                "price_below": 3150,
+                "rsi_below": 30,
+                "volume_spike": 2.0
             }}
         }}"""
 
@@ -403,8 +439,11 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
             json_str = response_text[start_idx:end_idx]
             data = json.loads(json_str)
 
-            # Extract market analysis
+            # Extract market analysis and watchlist
             market_analysis = data.get('market_analysis', 'No market analysis provided')
+            watchlist = data.get('watchlist', [])
+            if not isinstance(watchlist, list):
+                watchlist = []
 
             # Process each symbol's decision
             decisions = {}
@@ -451,10 +490,20 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
                         emergency_thresholds, is_owned, signal
                     )
 
+                    # Extract watchlist information
+                    watchlist_flag = decision_data.get('watchlist', False)
+                    watchlist_reason = decision_data.get('watchlist_reason', None)
+                    alert_conditions = decision_data.get('alert_conditions', None)
+                    if not isinstance(alert_conditions, dict):
+                        alert_conditions = None
+
                     decisions[symbol] = {
                         'signal': signal,
                         'confidence': confidence,
                         'reasoning': reasoning,
+                        'watchlist': watchlist_flag,
+                        'watchlist_reason': watchlist_reason,
+                        'alert_conditions': alert_conditions,
                         'entry_price': entry_price,
                         'stop_loss': stop_loss,
                         'target': target,
@@ -472,6 +521,9 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
                         'signal': 'HOLD',
                         'confidence': 0.3,
                         'reasoning': f'No analysis provided for {symbol}',
+                        'watchlist': False,
+                        'watchlist_reason': None,
+                        'alert_conditions': None,
                         'entry_price': None,
                         'stop_loss': None,
                         'target': None,
@@ -480,6 +532,7 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
 
             return {
                 'market_analysis': market_analysis,
+                'watchlist': watchlist,
                 'decisions': decisions
             }
 
