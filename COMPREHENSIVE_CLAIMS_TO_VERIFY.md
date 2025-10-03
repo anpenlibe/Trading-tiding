@@ -115,10 +115,10 @@ Priority tests to verify system actually works:
 
 #### AI Provider
 - ❓ Docs claim: "Claude AI"
-- ❓ Docs claim: "Gemini (gemini-1.5-flash)"
+- ✅ Verified: System uses Gemini (gemini-2.5-flash for testing, gemini-2.5-pro available for trading)
 - ❓ Docs claim: "Dual provider with failover"
 
-**Test**: Check `.env` and `src/data/config.py`
+**Test**: Verified in `.env` and `src/data/config.py`
 
 #### Database Records
 - Claim: 2,474 records (one doc)
@@ -385,8 +385,8 @@ ai = create_ai_brain()  # Auto-selects Claude/Gemini from config
 **Integration Effort**: 🔧🔧 Medium
 
 **Actions**:
-- Fix import (either create GeminiAI class or import ClaudeAI for both)
-- Update apps to use factory
+- ✅ FIXED: AIBrain now handles all providers via ProviderCoordinator (2025-10-03)
+- Factory updated to return AIBrain with multi-provider fallback
 - OR: Delete if not planning to use
 
 ---
@@ -558,6 +558,24 @@ For each claim:
 
 - ❓ Which fixes are actually needed vs nice-to-have?
   **Needs**: Test current state
+
+### Backtest AI Failure - Root Cause Identified
+
+**Problem**: Backtest AI analysis was failing with "Failed to analyze TCS" errors
+
+**Root Cause**:
+- Gemini model `gemini-1.5-flash` is outdated and returns 404 error
+- Error was silently swallowed in code (no logging)
+- System fell back to intentionally disabled fallback → raised exception
+- Circuit breaker triggered after 6 failures → all HOLD signals
+
+**Fix Applied**:
+- ✅ Updated default model: `gemini-1.5-flash` → `gemini-2.5-flash`
+- ✅ Added error logging to catch future API issues
+- ✅ Updated documentation (README, config comments)
+- ✅ Available: `gemini-2.5-pro` for production trading (better quality, 2 RPM limit)
+
+**Status**: Fixed and ready for testing
 
 ---
 

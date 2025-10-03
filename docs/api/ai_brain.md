@@ -1,100 +1,152 @@
 # ai_brain
 
-AI brain with enhanced error handling.
+Multi-provider AI decision model with automatic fallback.
 
-## Class: `ClaudeAI`
+**Updated**: 2025-10-03 - Refactored to use ProviderCoordinator
 
-Claude AI with robust error handling.
+## Class: `AIBrain`
 
-### Methods
+AI decision model with multi-provider fallback support (Groq → Gemini → Claude → rule-based).
 
-#### `__init__(self, api_key)`
+### Constructor
 
-Initialize with error handling.
+#### `__init__(self, api_key=None, temperature=0.6)`
 
-#### `get_required_indicators(self)`
+Initialize AI brain with provider coordinator.
 
-Return list of indicators this model needs.
+**Args:**
+- `api_key` (Optional[str]): Deprecated, kept for backward compatibility
+- `temperature` (float): Sampling temperature for all providers (default: 0.6)
 
-#### `analyze(self, market_data, indicators)`
+**Example:**
+```python
+from src.core.ai_brain import AIBrain
 
-Analyze market with comprehensive error handling.
+ai = AIBrain()
+# Automatically initializes multi-provider fallback chain
+```
 
-#### `_validate_decision(self, decision)`
+### Public Methods
 
-Validate AI decision structure.
+#### `get_required_indicators(self) -> list`
 
-#### `_safe_default_response(self, reason)`
+Return list of technical indicators required for analysis.
 
-Return safe default response.
+**Returns:**
+- List of indicator names: `["sma_20", "sma_50", "sma_200", "rsi_14", "macd", ...]`
 
-#### `_fallback_analysis(self, market_data, indicators)`
+#### `analyze(self, market_data: pd.DataFrame, indicators: Dict[str, float]) -> Dict[str, Any]`
 
-Simple rule-based fallback when AI is unavailable.
+Analyze single stock market data and generate trading decision.
 
-#### `_get_claude_response(self, prompt)`
+**Args:**
+- `market_data`: Historical price DataFrame with columns: `[symbol, open, high, low, close, volume]`
+- `indicators`: Calculated technical indicators dict
 
-Get response from Claude API with retry logic.
+**Returns:**
+- Trading decision dict:
+  ```python
+  {
+      'signal': 'BUY' | 'SELL' | 'HOLD',
+      'confidence': 0.0-1.0,
+      'reasoning': str,
+      'entry_price': float,
+      'stop_loss': float,
+      'target': float,
+      'position_size': int,
+      'risk_amount': float
+  }
+  ```
 
-#### `_log_decision(self, symbol, decision, market_data, indicators)`
+#### `analyze_portfolio_with_intelligent_fallback(self, portfolio_data, portfolio_indicators, context=None) -> Dict[str, Any]`
 
-Log trading decision for analysis.
+Analyze entire portfolio at once (batch analysis for multiple stocks).
 
-#### `get_decision_history(self)`
+**Args:**
+- `portfolio_data`: Dict of {symbol: DataFrame}
+- `portfolio_indicators`: Dict of {symbol: indicators_dict}
+- `context`: Optional context dict with `current_positions`, `timestamp`, etc.
 
-Get recent decision history.
+**Returns:**
+- Portfolio analysis dict:
+  ```python
+  {
+      'market_analysis': str,
+      'decisions': {symbol: decision_dict, ...},
+      'symbols_analyzed': int,
+      'timestamp': datetime
+  }
+  ```
 
-#### `get_performance_stats(self)`
+**Note:** Coordinator handles automatic fallback between providers if rate limits hit.
+
+#### `get_decision_history(self) -> list`
+
+Get recent decision history (last 100 decisions).
+
+**Returns:**
+- List of decision records with timestamp, symbol, signal, confidence, reasoning
+
+#### `get_performance_stats(self) -> Dict[str, Any]`
 
 Get AI performance statistics.
+
+**Returns:**
+- Stats dict:
+  ```python
+  {
+      'total_decisions': int,
+      'buy_signals': int,
+      'sell_signals': int,
+      'hold_signals': int,
+      'avg_confidence': float,
+      'high_confidence_decisions': int,
+      'last_decision_time': datetime
+  }
+  ```
 
 #### `reset_history(self)`
 
 Reset decision history.
 
-## Functions
+### Private Methods
 
-### `__init__(self, api_key)`
+#### `_get_ai_response(self, prompt: str, max_tokens: Optional[int] = None) -> str`
 
-Initialize with error handling.
+Get AI response using coordinator with automatic fallback.
 
-### `get_required_indicators(self)`
+#### `_validate_decision(self, decision: Dict[str, Any]) -> bool`
 
-Return list of indicators this model needs.
+Validate AI decision structure (checks required fields and value ranges).
 
-### `analyze(self, market_data, indicators)`
+#### `_safe_default_response(self, reason: str) -> Dict[str, Any]`
 
-Analyze market with comprehensive error handling.
+Return safe default HOLD response when analysis fails.
 
-### `_validate_decision(self, decision)`
+#### `_log_decision(self, symbol, decision, market_data, indicators)`
 
-Validate AI decision structure.
+Log trading decision for analysis and history tracking.
 
-### `_safe_default_response(self, reason)`
+## Legacy Alias
 
-Return safe default response.
+For backward compatibility with external scripts:
 
-### `_fallback_analysis(self, market_data, indicators)`
+```python
+ClaudeAI = AIBrain  # Deprecated alias
+```
 
-Simple rule-based fallback when AI is unavailable.
+**Migration:** Update imports from `ClaudeAI` to `AIBrain`.
 
-### `_get_claude_response(self, prompt)`
+## Architecture
 
-Get response from Claude API with retry logic.
+```
+AIBrain
+  └── ProviderCoordinator
+       ├── Groq llama-3.3-70b (Primary)
+       ├── Groq llama-3.1-70b (Secondary)
+       ├── Gemini 2.5 Pro (Tertiary)
+       ├── Claude 3.5 Sonnet (Optional)
+       └── Rule-based fallback (Final)
+```
 
-### `_log_decision(self, symbol, decision, market_data, indicators)`
-
-Log trading decision for analysis.
-
-### `get_decision_history(self)`
-
-Get recent decision history.
-
-### `get_performance_stats(self)`
-
-Get AI performance statistics.
-
-### `reset_history(self)`
-
-Reset decision history.
-
+See `src/ai/README.md` for detailed architecture documentation.

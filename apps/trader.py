@@ -30,7 +30,7 @@ from dataclasses import asdict
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.core.ai_brain import ClaudeAI
+from src.core.ai_brain import AIBrain
 from src.core.risk_manager import SimpleRiskManager  
 from src.core.paper_trader import PaperTrader
 from src.data_collector import DataCollector
@@ -70,7 +70,7 @@ class ClaudeTrader:
         
         # Initialize components
         try:
-            self.ai_brain = ClaudeAI()
+            self.ai_brain = AIBrain()
             self.risk_manager = SimpleRiskManager()
             self.paper_trader = PaperTrader(initial_capital)
             self.data_collector = DataCollector()

@@ -26,8 +26,8 @@ GEMINI_API_KEY=your_gemini_api_key     # Google AI Studio
 ANTHROPIC_API_KEY=your_claude_api_key  # Anthropic Console
 
 # Gemini model selection
-GEMINI_MODEL=gemini-1.5-flash          # Fast for testing
-# GEMINI_MODEL=gemini-2.0-flash-exp    # For production
+GEMINI_MODEL=gemini-2.5-flash          # Fast for pipeline testing (15 RPM)
+# GEMINI_MODEL=gemini-2.5-pro          # Better for trading (2 RPM, higher quality)
 
 # Optional: Live NSE data (otherwise uses realistic mock data)
 ZERODHA_API_KEY=your_zerodha_key        # From Kite Connect dashboard

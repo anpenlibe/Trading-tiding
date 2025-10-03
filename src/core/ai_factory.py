@@ -1,65 +1,60 @@
 """
-AI Provider Factory - Creates the appropriate AI brain based on configuration.
+AI Provider Factory - Creates the AI brain with multi-provider fallback.
 
-This factory pattern allows switching between different AI providers (Claude, Gemini)
-without changing imports or code in consumer modules.
+Note: After 2025-10-03 refactor, AIBrain handles all providers internally
+via ProviderCoordinator. This factory is maintained for backward compatibility.
 """
 
 from typing import Optional
 from src.interfaces import BaseDecisionModel
-from src.data.config import AI_PROVIDER, ANTHROPIC_API_KEY, GEMINI_API_KEY
 from src.utils.logger import setup_logger
-from src.exceptions import ConfigurationError
 
 logger = setup_logger(__name__, 'ai_factory.log')
 
 
 def create_ai_brain(api_key: Optional[str] = None) -> BaseDecisionModel:
     """
-    Create appropriate AI brain based on configuration.
+    Create AI brain with multi-provider fallback support.
 
     Args:
-        api_key: Optional API key override
+        api_key: Deprecated (kept for backward compatibility, now ignored)
 
     Returns:
-        BaseDecisionModel: Configured AI provider (Claude or Gemini)
-
-    Raises:
-        ConfigurationError: If provider is unknown or not properly configured
+        BaseDecisionModel: AIBrain with automatic provider fallback
     """
-    provider = AI_PROVIDER.lower()
+    from src.core.ai_brain import AIBrain
 
-    if provider == "claude":
-        from src.core.ai_brain import ClaudeAI
-        logger.info("Creating Claude AI brain")
-        return ClaudeAI(api_key=api_key)
-
-    elif provider == "gemini":
-        from src.core.gemini_brain import GeminiAI
-        logger.info("Creating Gemini AI brain")
-        return GeminiAI(api_key=api_key)
-
-    else:
-        raise ConfigurationError(f"Unknown AI provider: {provider}. Supported: claude, gemini")
+    logger.info("Creating AI brain with multi-provider fallback")
+    return AIBrain(api_key=api_key)
 
 
 def get_ai_provider_name() -> str:
-    """Get current AI provider name."""
-    return AI_PROVIDER
+    """
+    Get current AI provider name.
+
+    Note: After refactor, this returns the primary provider, but AIBrain
+    actually uses a fallback chain of multiple providers.
+    """
+    # Try to get from coordinator if brain is instantiated
+    try:
+        from src.core.ai_brain import AIBrain
+        brain = AIBrain()
+        return brain.coordinator.get_current_provider() or "multi-provider"
+    except:
+        return "multi-provider"
 
 
 def validate_ai_configuration() -> bool:
     """
-    Validate that the current AI provider is properly configured.
+    Validate that at least one AI provider is properly configured.
 
     Returns:
-        bool: True if configuration is valid
+        bool: True if at least one provider has valid API key
     """
-    provider = AI_PROVIDER.lower()
+    from src.data.config import ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY
 
-    if provider == "claude":
-        return bool(ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "your-claude-api-key-here")
-    elif provider == "gemini":
-        return bool(GEMINI_API_KEY and GEMINI_API_KEY != "your-gemini-api-key-here")
-    else:
-        return False
+    has_groq = bool(GROQ_API_KEY and GROQ_API_KEY != "your-groq-api-key-here")
+    has_gemini = bool(GEMINI_API_KEY and GEMINI_API_KEY != "your-gemini-api-key-here")
+    has_claude = bool(ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "your-claude-api-key-here")
+
+    return has_groq or has_gemini or has_claude

@@ -124,17 +124,17 @@ def check_apis() -> Tuple[bool, List[str]]:
     
     try:
         from src.data_collector import DataCollector
-        from src.core.ai_brain import ClaudeAI
-        
+        from src.core.ai_brain import AIBrain
+
         # Test data collector initialization (includes API checks)
         collector = DataCollector()
         if len(collector.apis) == 0:
             issues.append("No data APIs available")
-        
-        # Test AI brain initialization (Claude API)
-        ai = ClaudeAI()
-        if not hasattr(ai, 'client') or ai.client is None:
-            issues.append("Claude AI client not initialized")
+
+        # Test AI brain initialization (multi-provider with fallback)
+        ai = AIBrain()
+        if not hasattr(ai, 'coordinator') or ai.coordinator is None:
+            issues.append("AI Brain coordinator not initialized")
         
     except Exception as e:
         issues.append(f"API check failed: {e}")

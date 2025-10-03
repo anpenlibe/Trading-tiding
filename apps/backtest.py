@@ -4,16 +4,15 @@ Module: historical_simulator.py
 Purpose: Simulate trading system on historical data for backtesting
 Author: Trading Bot Developer
 Created: 2025-06-16
-Modified: 2025-06-30 - FIXED: Updated to use correct components and unified pipeline
+Modified: 2025-10-03 - Updated to use AIBrain (multi-provider)
 
 This module allows you to run your trading system on historical data,
 simulating real-time conditions for strategy testing and validation.
 
-FIXES APPLIED:
-- Changed from ai_brain_optimized to ai_brain (ClaudeAI)
-- Changed from IndicatorCalculator to compute_indicators  
+CHANGES:
+- 2025-10-03: Updated to use AIBrain (was ClaudeAI)
+- 2025-06-30: Changed from ai_brain_optimized to ai_brain
 - Added risk manager integration
-- Fixed method calls to match paper_trader API
 - Updated to use claude_trader unified pipeline
 """
 
@@ -266,8 +265,8 @@ class HistoricalSimulator:
         """Initialize AI brain and paper trader if enabled"""
         try:
             if self.config.enable_ai_brain:
-                # FIXED: Use correct ClaudeAI import
-                from src.core.ai_brain import ClaudeAI
+                # Use AIBrain with multi-provider fallback
+                from src.core.ai_brain import AIBrain
 
                 # Set AI provider and model from config
                 if hasattr(self.config, 'ai_provider'):
@@ -278,7 +277,7 @@ class HistoricalSimulator:
                     elif self.config.ai_provider == 'claude':
                         os.environ['CLAUDE_MODEL'] = self.config.ai_model
 
-                self.ai_brain = ClaudeAI()
+                self.ai_brain = AIBrain()
                 logger.info(f"AI Brain initialized - Provider: {self.config.ai_provider if hasattr(self.config, 'ai_provider') else 'default'}, Model: {self.config.ai_model if hasattr(self.config, 'ai_model') else 'default'}")
         except ImportError as e:
             logger.warning(f"AI Brain not available - continuing without AI decisions: {e}")

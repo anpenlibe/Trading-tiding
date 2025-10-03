@@ -1,30 +1,22 @@
-"""AI brain with enhanced error handling - supports Claude and Gemini providers.
+"""AI brain with multi-provider fallback support.
 
-TODO: MULTI-MODEL ARCHITECTURE IMPROVEMENTS
-- Implement REST API fallback for Gemini (proven working via curl)
-- Add OpenAI compatibility mode as alternative
-- Consider hybrid approach: SDK first, REST fallback
-- Add model-specific prompt optimization
-- Implement cross-provider response validation
-- Add provider health monitoring and auto-switching
+Refactored architecture:
+- Uses ProviderCoordinator for API calls with automatic fallback
+- Supports Groq (llama-3.3 → llama-3.1) → Gemini Pro → Claude chain
+- Maintains backward compatibility with existing applications
 """
 
 import time
 from typing import Dict, Any, Optional, List
 import pandas as pd
-import anthropic
-import requests
 import json
 from dataclasses import asdict
 
 from src.interfaces import BaseDecisionModel, TradingSignal, MarketData
 from src.ai.prompt_builder import PromptBuilder
+from src.ai.provider_coordinator import ProviderCoordinator
 from src.core.risk_manager import SimpleRiskManager
-from src.data.config import (
-    ANTHROPIC_API_KEY, CLAUDE_MODEL, CLAUDE_MAX_TOKENS, CLAUDE_TEMPERATURE,
-    GEMINI_API_KEY, GEMINI_MODEL, GEMINI_MAX_TOKENS, GEMINI_TEMPERATURE,
-    AI_PROVIDER, INITIAL_CAPITAL, MAX_DECISION_HISTORY
-)
+from src.data.config import INITIAL_CAPITAL, MAX_DECISION_HISTORY
 from src.utils.logger import setup_logger
 from src.utils.retry import retry_with_backoff
 from src.exceptions import AIAnalysisError, ConfigurationError
@@ -33,58 +25,39 @@ from src.monitoring.performance import performance_tracker
 logger = setup_logger(__name__, 'ai_brain.log')
 
 
-class ClaudeAI(BaseDecisionModel):
-    """Claude AI with robust error handling."""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        """Initialize with error handling."""
-        try:
-            # Determine provider from config
-            self.provider = AI_PROVIDER.lower()
+class AIBrain(BaseDecisionModel):
+    """AI decision model with multi-provider fallback support.
 
-            if self.provider == "claude":
-                self._init_claude(api_key)
-            elif self.provider == "gemini":
-                self._init_gemini(api_key)
-            else:
-                raise ConfigurationError(f"Unknown AI provider: {self.provider}")
+    Uses ProviderCoordinator internally for automatic fallback:
+    Groq llama-3.3 → Groq llama-3.1 → Gemini Pro → Claude → rule-based
+    """
+
+    def __init__(self, api_key: Optional[str] = None, temperature: float = 0.6):
+        """Initialize with provider coordinator.
+
+        Args:
+            api_key: Deprecated (kept for backward compatibility, now ignored)
+            temperature: Sampling temperature for all providers
+        """
+        try:
+            # Initialize provider coordinator with fallback chain
+            self.coordinator = ProviderCoordinator(temperature=temperature)
 
             self.prompt_builder = PromptBuilder()
             self.risk_manager = SimpleRiskManager()
             self.decision_history = []
 
-            # Track API failures for circuit breaking
+            # Track API failures for this brain instance (coordinator has its own circuit breakers)
             self.consecutive_failures = 0
             self.max_consecutive_failures = 5
 
-            logger.info(f"AI initialized - Provider: {self.provider}, Model: {self.model}")
+            logger.info(f"AI initialized with {len(self.coordinator.fallback_chain)} providers in fallback chain")
+            logger.info(f"Current provider: {self.coordinator.get_current_provider()}")
         except Exception as e:
             logger.error(f"Failed to initialize AI: {e}")
             raise AIAnalysisError(f"AI initialization failed: {e}")
 
-    def _init_claude(self, api_key: Optional[str] = None):
-        """Initialize Claude provider."""
-        self.api_key = api_key or ANTHROPIC_API_KEY
-        if not self.api_key:
-            raise ConfigurationError("ANTHROPIC_API_KEY not configured")
 
-        self.client = anthropic.Anthropic(api_key=self.api_key)
-        self.model = CLAUDE_MODEL
-        self.max_tokens = CLAUDE_MAX_TOKENS
-        self.temperature = CLAUDE_TEMPERATURE
-
-    def _init_gemini(self, api_key: Optional[str] = None):
-        """Initialize Gemini provider."""
-        self.api_key = api_key or GEMINI_API_KEY
-        if not self.api_key:
-            raise ConfigurationError("GEMINI_API_KEY not configured")
-
-        # Use REST API instead of SDK (more reliable)
-        self.client = "rest_api"  # Flag to use REST API
-        self.model = GEMINI_MODEL
-        self.max_tokens = GEMINI_MAX_TOKENS
-        self.temperature = GEMINI_TEMPERATURE
-    
     def get_required_indicators(self) -> list:
         """Return list of indicators this model needs."""
         return [
@@ -157,12 +130,14 @@ class ClaudeAI(BaseDecisionModel):
                     response_text, current_price
                 )
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse {self.provider.capitalize()} response: {e}")
+                provider = self.coordinator.get_current_provider() or "AI"
+                logger.warning(f"Failed to parse {provider} response: {e}")
                 return self._safe_default_response("Parse error")
-            
+
             # Validate decision
             if not self._validate_decision(decision):
-                logger.warning(f"Invalid decision from {self.provider.capitalize()}")
+                provider = self.coordinator.get_current_provider() or "AI"
+                logger.warning(f"Invalid decision from {provider}")
                 return self._safe_default_response("Invalid decision")
             
             # Add risk parameters
@@ -261,107 +236,35 @@ class ClaudeAI(BaseDecisionModel):
             'risk_amount': None
         }
     
-    def _get_ai_response(self, prompt: str) -> str:
-        """Get response from configured AI provider."""
+    def _get_ai_response(self, prompt: str, max_tokens: Optional[int] = None) -> str:
+        """Get AI response using coordinator with automatic fallback.
+
+        Args:
+            prompt: The prompt to send
+            max_tokens: Optional max_tokens override
+
+        Returns:
+            AI response text
+        """
         start_time = time.time()
 
-        if self.provider == "claude":
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
-                temperature=self.temperature,
-                messages=[{"role": "user", "content": prompt}],
-                timeout=30.0
-            )
-            response_text = response.content[0].text
-
-        elif self.provider == "gemini":
-            response_text = self._call_gemini_rest_api(prompt)
-
-        else:
-            raise ValueError(f"Unknown provider: {self.provider}")
+        response_text = self.coordinator.call_with_fallback(prompt, max_tokens=max_tokens)
 
         duration = time.time() - start_time
-        logger.info(f"{self.provider.capitalize()} response received in {duration:.2f}s")
+        provider = self.coordinator.get_current_provider() or "rule-based"
+        logger.info(f"AI response from {provider} in {duration:.2f}s")
         logger.debug(f"Response: {response_text[:200]}...")  # Log first 200 chars
 
         return response_text
 
     def _get_portfolio_ai_response(self, prompt: str) -> str:
-        """Get portfolio response from configured AI provider with longer timeout."""
-        if self.provider == "claude":
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens * 2,  # Increase tokens for portfolio
-                temperature=self.temperature,
-                messages=[{"role": "user", "content": prompt}],
-                timeout=60.0  # Longer timeout for portfolio analysis
-            )
-            return response.content[0].text
+        """Get portfolio AI response using coordinator.
 
-        elif self.provider == "gemini":
-            return self._call_gemini_rest_api(prompt, max_tokens=self.max_tokens * 2)
+        Note: max_tokens is handled by provider configs in coordinator.
+        Groq uses 3000 (TPM limit), others use higher values.
+        """
+        return self.coordinator.call_with_fallback(prompt)
 
-        else:
-            raise ValueError(f"Unknown provider: {self.provider}")
-
-    def _call_gemini_rest_api(self, prompt: str, max_tokens: int = None) -> str:
-        """Call Gemini using REST API (proven working method)."""
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent"
-
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": prompt
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": self.temperature,
-                "maxOutputTokens": max_tokens or self.max_tokens,
-                "candidateCount": 1
-            }
-        }
-
-        headers = {
-            "Content-Type": "application/json"
-        }
-
-        params = {
-            "key": self.api_key
-        }
-
-        try:
-            response = requests.post(url, json=payload, headers=headers, params=params, timeout=90)
-            response.raise_for_status()
-
-            result = response.json()
-            if "candidates" in result and len(result["candidates"]) > 0:
-                candidate = result["candidates"][0]
-                if "content" in candidate:
-                    content = candidate["content"]
-                    # Handle both structures: with and without parts array
-                    if "parts" in content and len(content["parts"]) > 0:
-                        return content["parts"][0]["text"]
-                    elif "text" in content:
-                        return content["text"]
-                    else:
-                        # Fallback: try to find text anywhere in content
-                        import json
-                        logger.debug(f"Unexpected content structure: {json.dumps(content, indent=2)}")
-                        raise Exception(f"No text found in content: {content}")
-                else:
-                    raise Exception(f"No content in candidate: {candidate}")
-            else:
-                raise Exception(f"No valid candidates in response: {result}")
-
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Gemini REST API error: {e}")
-        except (KeyError, IndexError) as e:
-            raise Exception(f"Failed to parse Gemini response: {e}")
 
     def _log_decision(self, symbol: str, decision: Dict[str, Any],
                      market_data: pd.DataFrame, indicators: Dict[str, float]):
@@ -420,13 +323,11 @@ class ClaudeAI(BaseDecisionModel):
     def analyze_portfolio_with_intelligent_fallback(self, portfolio_data: Dict[str, pd.DataFrame],
                                                    portfolio_indicators: Dict[str, Dict[str, float]],
                                                    context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Analyze portfolio with intelligent fallback to protect owned positions."""
-        try:
-            # Try efficient portfolio analysis first
-            return self._analyze_portfolio_batch(portfolio_data, portfolio_indicators, context)
-        except Exception as portfolio_error:
-            logger.warning(f"Portfolio analysis failed: {portfolio_error}, using intelligent fallback")
-            return self._intelligent_fallback_analysis(portfolio_data, portfolio_indicators, context, portfolio_error)
+        """Analyze portfolio with automatic multi-provider fallback.
+
+        Coordinator handles fallback: Groq llama-3.3 → Groq llama-3.1 → Gemini Pro → rule-based
+        """
+        return self._analyze_portfolio_batch(portfolio_data, portfolio_indicators, context)
 
     def _analyze_portfolio_batch(self, portfolio_data: Dict[str, pd.DataFrame],
                                 portfolio_indicators: Dict[str, Dict[str, float]],
@@ -446,11 +347,12 @@ class ClaudeAI(BaseDecisionModel):
                 portfolio_data, portfolio_indicators, context
             )
 
-            # Single AI API call for all symbols
+            # Single AI API call for all symbols (coordinator handles fallback)
             try:
                 response_text = self._get_portfolio_ai_response(prompt)
             except Exception as e:
-                pass  # Silent fallback for portfolio analysis
+                # Coordinator handles all fallback internally, if we get here all providers failed
+                logger.error(f"All AI providers failed for portfolio analysis: {type(e).__name__}: {e}")
                 self.consecutive_failures += 1
                 return self._fallback_portfolio_analysis(portfolio_data, portfolio_indicators)
 
@@ -460,7 +362,17 @@ class ClaudeAI(BaseDecisionModel):
                     response_text, portfolio_data, context
                 )
             except json.JSONDecodeError as e:
-                logger.warning(f"Failed to parse {self.provider.capitalize()} portfolio response: {e}")
+                provider = self.coordinator.get_current_provider() or "AI"
+                logger.warning(f"Failed to parse {provider} portfolio response: {e}")
+                logger.error(f"Response text (first 500 chars): {response_text[:500]}")
+                logger.error(f"Response text (last 300 chars): {response_text[-300:]}")
+                # Save malformed response for debugging
+                try:
+                    with open('/tmp/ai_malformed_response.txt', 'w') as f:
+                        f.write(response_text)
+                    logger.error("Saved malformed response to /tmp/ai_malformed_response.txt")
+                except:
+                    pass
                 return self._safe_portfolio_default_response(list(portfolio_data.keys()), "Parse error")
 
             # Validate all decisions
@@ -492,6 +404,11 @@ class ClaudeAI(BaseDecisionModel):
             }
 
         except Exception as e:
+            error_msg = str(e)
+            # Re-raise rate limit errors to trigger provider fallback
+            if "429" in error_msg or "Too Many Requests" in error_msg or "rate limit" in error_msg.lower():
+                raise  # Let the fallback handler deal with it
+
             logger.error(f"Portfolio analysis error: {e}")
             self.consecutive_failures += 1
             return self._safe_portfolio_default_response(list(portfolio_data.keys()), f"Analysis error: {str(e)}")
@@ -595,4 +512,8 @@ class ClaudeAI(BaseDecisionModel):
             'critical_symbols_analyzed': critical_symbols_analyzed,
             'owned_positions_protected': len(current_positions)
         }
-    
+
+
+# Backward compatibility (deprecated)
+ClaudeAI = AIBrain
+
