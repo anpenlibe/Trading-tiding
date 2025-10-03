@@ -144,7 +144,7 @@ class SimpleRiskManager(BaseRiskManager):
                 position_size = max(1, position_size)
             else:
                 position_size = 0  # Even 1 share exceeds position limits
-                logger.warning(f"Stock price ₹{entry_price:,.0f} exceeds capital position limit of ₹{capital * MAX_POSITION_SIZE:,.0f}")
+                print(f"Stock price ₹{entry_price:,.0f} exceeds capital position limit of ₹{capital * MAX_POSITION_SIZE:,.0f}")
         else:
             position_size = max(1, position_size)
 

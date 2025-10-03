@@ -312,14 +312,15 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
     "market_analysis": "Brief overall market view and portfolio insights",
     "decisions": {{"""
 
-        # Add expected decision format for each symbol
-        for i, symbol in enumerate(symbols_list):
-            comma = "," if i < len(symbols_list) - 1 else ""
-            prompt += f"""
-        "{symbol}": {{
+        # Add expected decision format - show one example, apply to all symbols
+        first_symbol = symbols_list[0]
+        remaining_symbols = symbols_list[1:] if len(symbols_list) > 1 else []
+
+        prompt += f"""
+        "{first_symbol}": {{
             "signal": "BUY/SELL/HOLD",
             "confidence": 0.75,
-            "reasoning": "Brief analysis for {symbol}",
+            "reasoning": "Brief analysis for {first_symbol}",
             "entry_price": null,
             "stop_loss": null,
             "take_profit": null,
@@ -328,7 +329,26 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
                 "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT},
                 "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}
             }}
-        }}{comma}"""
+        }}"""
+
+        if remaining_symbols:
+            prompt += f""",
+        ... (apply same format for: {', '.join(remaining_symbols)})
+
+        Example for remaining symbols:
+        "SYMBOL": {{
+            "signal": "BUY/SELL/HOLD",
+            "confidence": 0.XX,
+            "reasoning": "Brief analysis",
+            "entry_price": price_or_null,
+            "stop_loss": null,
+            "take_profit": null,
+            "emergency_thresholds": {{
+                "stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT},
+                "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT},
+                "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}
+            }}
+        }}"""
 
         prompt += f"""
     }}

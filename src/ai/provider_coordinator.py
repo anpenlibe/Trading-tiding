@@ -1,11 +1,18 @@
 """Provider coordinator managing AI client fallback chain.
 
 This coordinator manages the cascading fallback between AI providers:
-Groq (llama-3.3) → Groq (llama-3.1) → Gemini Pro → Rule-based analysis
+Groq (gpt-oss-120b) → Groq (llama-3.3-70b) → Groq (gpt-oss-20b) → Gemini Pro → Claude → Rule-based
+
+Rate limits (per model):
+- gpt-oss-120b: 8K TPM, 200K TPD (primary - best quality + capacity)
+- llama-3.3-70b: 6K TPM, 100K TPD (proven reliable)
+- gpt-oss-20b: 8K TPM, 200K TPD (fast fallback)
+Combined Groq capacity: 500K TPD
 """
 
 from typing import Dict, List, Optional, Any
 import os
+import time
 from src.ai.clients.base_client import BaseAIClient
 from src.ai.clients.claude_client import ClaudeClient
 from src.ai.clients.gemini_client import GeminiClient
@@ -48,6 +55,7 @@ class ProviderCoordinator:
     """
 
     MAX_CONSECUTIVE_FAILURES = 5
+    RATE_LIMIT_COOLDOWN = 65  # Seconds to wait after rate limit (65s = just over 1 minute)
 
     def __init__(self, fallback_chain: Optional[List[ProviderConfig]] = None,
                  temperature: float = 0.6):
@@ -64,6 +72,7 @@ class ProviderCoordinator:
         self.clients: Dict[str, BaseAIClient] = {}
         self.consecutive_failures: Dict[str, int] = {}
         self.circuit_open: Dict[str, bool] = {}
+        self.rate_limit_cooldown: Dict[str, float] = {}  # Track rate limit cooldown (timestamp when available again)
 
         # Current provider tracking
         self.current_provider_index = 0
@@ -80,23 +89,35 @@ class ProviderCoordinator:
         """
         chain = []
 
-        # Groq llama-3.3-70b (first choice - fastest)
+        # Groq models (each has independent rate limits per model)
         groq_key = os.getenv("GROQ_API_KEY")
         if groq_key:
+            # Primary: gpt-oss-120b - best quality, native JSON, 8K TPM / 200K TPD
             chain.append(ProviderConfig(
                 provider="groq",
-                model="llama-3.3-70b-versatile",
-                max_tokens=3000,  # Conservative for 6000 TPM limit
+                model="openai/gpt-oss-120b",
+                max_tokens=6000,
                 api_key=groq_key
             ))
 
-            # Groq llama-3.1-70b (second choice - separate rate limit pool)
+            # Secondary: llama-3.3-70b - proven reliable, 6K TPM / 100K TPD
             chain.append(ProviderConfig(
                 provider="groq",
-                model="llama-3.1-70b-versatile",
-                max_tokens=3000,
+                model="llama-3.3-70b-versatile",
+                max_tokens=6000,
                 api_key=groq_key
             ))
+
+            # Tertiary: gpt-oss-20b - fast fallback, 8K TPM / 200K TPD
+            chain.append(ProviderConfig(
+                provider="groq",
+                model="openai/gpt-oss-20b",
+                max_tokens=6000,
+                api_key=groq_key
+            ))
+
+            # Note: llama-3.1-8b-instant available for pipeline testing (fast, low token usage)
+            # Not included in production - 3 Groq models provide sufficient coverage
 
         # Gemini Pro (reliable but slower)
         gemini_key = os.getenv("GEMINI_API_KEY")
@@ -183,6 +204,36 @@ class ProviderCoordinator:
         key = f"{config.provider}:{config.model}"
         return self.circuit_open.get(key, False)
 
+    def _is_rate_limited(self, config: ProviderConfig) -> bool:
+        """Check if provider is in rate limit cooldown.
+
+        Args:
+            config: Provider configuration
+
+        Returns:
+            True if still in cooldown period
+        """
+        key = f"{config.provider}:{config.model}"
+        cooldown_until = self.rate_limit_cooldown.get(key, 0)
+
+        if cooldown_until > time.time():
+            remaining = int(cooldown_until - time.time())
+            logger.debug(f"Provider {key} in rate limit cooldown ({remaining}s remaining)")
+            return True
+
+        return False
+
+    def _set_rate_limit_cooldown(self, config: ProviderConfig):
+        """Put provider in rate limit cooldown.
+
+        Args:
+            config: Provider configuration
+        """
+        key = f"{config.provider}:{config.model}"
+        cooldown_until = time.time() + self.RATE_LIMIT_COOLDOWN
+        self.rate_limit_cooldown[key] = cooldown_until
+        logger.info(f"Provider {key} in rate limit cooldown for {self.RATE_LIMIT_COOLDOWN}s")
+
     def _record_success(self, config: ProviderConfig):
         """Record successful API call, reset failure counter.
 
@@ -226,6 +277,10 @@ class ProviderCoordinator:
                 logger.debug(f"Skipping {config} - circuit breaker open")
                 continue
 
+            # Skip if in rate limit cooldown
+            if self._is_rate_limited(config):
+                continue
+
             try:
                 client = self._get_or_create_client(config)
 
@@ -257,11 +312,12 @@ class ProviderCoordinator:
 
                 if is_rate_limit:
                     logger.warning(f"Rate limit hit for {config}: {error_msg}")
+                    # Put in cooldown instead of circuit breaker
+                    self._set_rate_limit_cooldown(config)
                 else:
                     logger.error(f"Error from {config}: {error_msg}")
-
-                # Record failure
-                self._record_failure(config)
+                    # Only record failures (circuit breaker) for non-rate-limit errors
+                    self._record_failure(config)
 
                 # Try next provider in chain
                 continue

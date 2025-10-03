@@ -79,7 +79,17 @@ class GroqClient(BaseAIClient):
             if "choices" in result and len(result["choices"]) > 0:
                 message = result["choices"][0].get("message", {})
                 content = message.get("content", "")
+
+                # For reasoning models (like gpt-oss-20b), check reasoning field if content is empty
+                if not content:
+                    reasoning = message.get("reasoning", "")
+                    if reasoning:
+                        logger.debug(f"Using reasoning field from {self.model} (reasoning model)")
+                        content = reasoning
+
                 if content:
+                    # Strip markdown code blocks if present (common with reasoning models)
+                    content = self._strip_markdown_code_blocks(content)
                     return content
                 else:
                     raise Exception(f"No content in Groq response: {result}")
@@ -90,6 +100,38 @@ class GroqClient(BaseAIClient):
             raise Exception(f"Groq API error: {e}")
         except (KeyError, IndexError) as e:
             raise Exception(f"Failed to parse Groq response: {e}")
+
+    def _strip_markdown_code_blocks(self, content: str) -> str:
+        """Strip markdown code blocks from response.
+
+        Many models (especially reasoning models like gpt-oss-120b) wrap
+        JSON responses in markdown code blocks like:
+        ```json
+        {...}
+        ```
+
+        This strips those blocks to return clean JSON.
+
+        Args:
+            content: Raw response content
+
+        Returns:
+            Content with markdown code blocks stripped
+        """
+        content = content.strip()
+
+        # Check if wrapped in code blocks
+        if content.startswith('```'):
+            # Find the first newline (end of opening fence)
+            first_newline = content.find('\n')
+            if first_newline != -1:
+                # Find the closing fence
+                closing_fence = content.rfind('```')
+                if closing_fence > first_newline:
+                    # Extract content between fences
+                    content = content[first_newline + 1:closing_fence].strip()
+
+        return content
 
     def get_provider_name(self) -> str:
         """Return 'groq' with model identifier for better tracking."""
