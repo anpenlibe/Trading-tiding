@@ -152,11 +152,10 @@ class MockAPI(BaseMarketDataAPI):
     def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
         """Generate mock data with realistic variations"""
         import random
-        
-        if symbol not in self.base_prices:
-            return None
-        
-        base = self.base_prices[symbol]
+
+        # Unknown symbols still get synthetic data so paper/test runs aren't
+        # starved (mock is for pipeline testing, not realism).
+        base = self.base_prices.get(symbol, 1000.0)
         variation = base * 0.01  # 1% variation
         
         # Generate realistic OHLC

@@ -9,7 +9,7 @@ from collections import defaultdict
 from src.data.cache import MemoryCache
 from src.data.validator import DataValidator
 from src.data.database import DatabaseManager
-from src.data.data_sources import ZerodhaAPI, MockAPI
+from src.data.data_sources import ZerodhaAPI, YahooFinanceAPI, MockAPI
 from src.core.indicator_engine import calculate_all_indicators
 from src.interfaces import BaseMarketDataAPI, MarketData
 from src.data.config import SYMBOLS, CACHE_TTL_SECONDS, DB_PATH, MIN_DATA_FOR_INDICATORS
@@ -69,56 +69,64 @@ class DataCollector:
             raise DatabaseError(f"Database initialization failed: {e}")
     
     def _init_apis(self) -> List[BaseMarketDataAPI]:
-        """Initialize APIs with circuit breakers."""
-        apis = []
-        live_apis = []  # Track real/live APIs separately
-        
-        # Disclaimer about MockAPI
-        logger.info("Disclaimer: The MockAPI is intended for testing the application pipeline and should not be used for actual data collection or live trading.")
+        """Initialize data sources in priority order: Zerodha → Yahoo → (mock)."""
+        apis: List[BaseMarketDataAPI] = []
+        live_apis = []  # real/live sources only (mock excluded)
 
-        for api_class in [ZerodhaAPI]: # Explicitly exclude MockAPI from the loop
-            try:
-                api = api_class()
-                if api.is_available():
-                    apis.append(api)
-                    live_apis.append(api)
-                    # Create circuit breaker for this API
-                    self.api_circuit_breakers[api.__class__.__name__] = CircuitBreaker(
-                        failure_threshold=3,
-                        recovery_timeout=300  # 5 minutes
-                    )
-                    logger.info(f"Initialized {api_class.__name__}")
-            except Exception as e:
-                logger.warning(f"Failed to initialize {api_class.__name__}: {e}")
-        
-        # CRITICAL: Ensure live trading has at least one real API
-        if (self.safety_config.mode.value == 'live' and 
-            not live_apis):
-            error_msg = (
-                "🚨 CRITICAL ERROR: No live APIs available for live trading mode. "
-                "Live trading requires a working data source (Zerodha API). "
-                "Please configure your API credentials or switch to paper trading mode."
+        def _register(api):
+            apis.append(api)
+            live_apis.append(api)
+            self.api_circuit_breakers[api.__class__.__name__] = CircuitBreaker(
+                failure_threshold=3, recovery_timeout=300  # 5 minutes
             )
-            logger.critical(error_msg)
-            raise TradingSystemError(error_msg)
-        
-        if not apis:
-            # CRITICAL SAFETY CHECK: Prevent mock data fallback in live trading
-            if not self.safety_config.allow_mock_fallback:
+            logger.info(f"Initialized {api.__class__.__name__}")
+
+        # Priority 1: Zerodha (authenticated live data).
+        try:
+            zerodha = ZerodhaAPI()
+            if zerodha.is_available():
+                _register(zerodha)
+        except Exception as e:
+            logger.warning(f"Failed to initialize ZerodhaAPI: {e}")
+
+        # Priority 2: Yahoo Finance (real backup). Include whenever yfinance is
+        # importable; per-fetch availability/rate-limiting is handled internally,
+        # so we avoid a network probe on every startup.
+        try:
+            yahoo = YahooFinanceAPI()
+            if getattr(yahoo, "yf", None) is not None:
+                _register(yahoo)
+        except Exception as e:
+            logger.warning(f"Failed to initialize YahooFinanceAPI: {e}")
+
+        # Live trading requires a real source; mock is NEVER allowed.
+        if self.safety_config.mode.value == 'live':
+            if not live_apis:
                 error_msg = (
-                    f"🚨 CRITICAL ERROR: No live APIs available in {self.safety_config.mode.value} mode. "
-                    "Mock data fallback is DISABLED for financial safety. "
-                    "Please configure a live data source (Zerodha API) before trading with real money."
+                    "🚨 No live data source available for LIVE trading. Configure Zerodha "
+                    "(or ensure Yahoo Finance is reachable), or switch to paper trading."
                 )
                 logger.critical(error_msg)
                 raise TradingSystemError(error_msg)
-            
-            logger.warning(f"No APIs available, using fallback mock data in {self.safety_config.mode.value} mode")
-            # Force MockAPI as fallback only if safety config allows it
-            mock = MockAPI()
-            apis.append(mock)
+            return apis
+
+        # Paper / backtest: add Mock as a guaranteed last-resort fallback so a real
+        # source that authenticates but then fails to fetch can't dead-end a cycle.
+        if self.safety_config.allow_mock_fallback:
+            apis.append(MockAPI())
             self.api_circuit_breakers['MockAPI'] = CircuitBreaker()
-        
+            if not live_apis:
+                logger.warning(
+                    f"No live APIs available; using mock data in {self.safety_config.mode.value} mode"
+                )
+        elif not apis:
+            error_msg = (
+                f"🚨 No live data source in {self.safety_config.mode.value} mode and mock "
+                "fallback is disabled. Configure a live data source before trading."
+            )
+            logger.critical(error_msg)
+            raise TradingSystemError(error_msg)
+
         return apis
     
     @retry_with_backoff(max_retries=2, exceptions=(DataCollectionError,))
@@ -149,6 +157,7 @@ class DataCollector:
                         market_data = api.fetch_ohlc(symbol)
                     
                     if not market_data:
+                        last_error = f"{api_name} returned no data"
                         continue
                     
                     # Validate data
