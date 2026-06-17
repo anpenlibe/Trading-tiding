@@ -66,8 +66,7 @@ MAX_DRAWDOWN        = float(os.getenv("MAX_DRAWDOWN", "0.15"))
 
 # Position Sizing
 MIN_TRADE_VALUE     = 500.0
-MAX_POSITION_SIZE = 0.20
-MAX_POSITION_SIZE_PERCENT   = 0.20
+MAX_POSITION_SIZE   = float(os.getenv("MAX_POSITION_SIZE", "0.20"))  # max fraction of capital per position
 
 # UPDATED: Centralized Symbol Management
 # Import stock registry for intelligent symbol selection
@@ -176,9 +175,9 @@ STRATEGIES = {
 }
 
 # Risk Management
-STOP_LOSS_PERCENT     = 0.015
-TAKE_PROFIT_PERCENT   = 0.03
-TRAILING_STOP_PERCENT = 0.01
+STOP_LOSS_PERCENT     = float(os.getenv("STOP_LOSS_PERCENT", "0.015"))
+TAKE_PROFIT_PERCENT   = float(os.getenv("TAKE_PROFIT_PERCENT", "0.03"))
+TRAILING_STOP_PERCENT = 0.01  # NOTE: defined but currently unread anywhere
 
 # Emergency Threshold Defaults (for AI monitoring system)
 EMERGENCY_STOP_LOSS_PCT = float(os.getenv('EMERGENCY_STOP_LOSS_PCT', '-3.5'))  # Default -3.5%
@@ -186,8 +185,8 @@ EMERGENCY_TAKE_PROFIT_PCT = float(os.getenv('EMERGENCY_TAKE_PROFIT_PCT', '4.0'))
 EMERGENCY_RECHECK_PCT = float(os.getenv('EMERGENCY_RECHECK_PCT', '2.0'))  # Default ±2.0%
 
 # Paper Trading Settings
-PAPER_TRADE_COMMISSION = 0.0
-PAPER_TRADE_SLIPPAGE   = 0.0005
+PAPER_TRADE_COMMISSION = float(os.getenv("PAPER_TRADE_COMMISSION", "0.0"))
+PAPER_TRADE_SLIPPAGE   = float(os.getenv("PAPER_TRADE_SLIPPAGE", "0.0005"))
 
 # Performance Tracking
 MIN_TRADES_FOR_ANALYSIS   = 15
@@ -247,9 +246,9 @@ DEFAULT_TRADE_HISTORY_LIMIT = int(os.getenv('DEFAULT_TRADE_HISTORY_LIMIT', '50')
 # ============= ALERT CONFIGURATION =============
 # Alert system settings
 ENABLE_ALERTS = True
-ALERT_COOLDOWN_MINUTES = 30
-PRICE_ALERT_THRESHOLD = 0.02  # 2% move
-VOLUME_SPIKE_MULTIPLIER = 2.0
+ALERT_COOLDOWN_MINUTES = 30           # NOTE: defined but currently unread anywhere
+PRICE_ALERT_THRESHOLD = float(os.getenv("PRICE_ALERT_THRESHOLD", "0.02"))  # 2% move
+VOLUME_SPIKE_MULTIPLIER = 2.0         # NOTE: trader.py hardcodes 2.0 instead of reading this
 RSI_ALERT_DURATION = 2  # Periods RSI must stay extreme
 
 # Development/Debug Settings
@@ -268,7 +267,7 @@ def get_trading_symbols(strategy: str = None) -> list:
         List of trading symbols
     """
     try:
-        from src.stock_registry import (
+        from src.data.stock_registry import (
             get_swing_trading_symbols, 
             get_conservative_symbols,
             get_diversified_symbols,
@@ -313,7 +312,7 @@ def get_symbol_info(symbol: str) -> dict:
         Dict with symbol information or empty dict if not found
     """
     try:
-        from src.stock_registry import get_stock_registry
+        from src.data.stock_registry import get_stock_registry
         registry = get_stock_registry()
         info = registry.get_stock_info(symbol)
         if info:
