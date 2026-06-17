@@ -7,8 +7,8 @@ The system has several applications for different use cases:
 
 ### 1. apps/trader.py ✅ MAIN ENTRY POINT
 **Purpose**: Main AI-driven trading system
-**Entry**: `python apps/trader.py [--cycles N] [--auto]`
-**Mode**: Continuous paper trading with AI decisions
+**Entry**: `python apps/trader.py`
+**Mode**: Runs a single AI-driven paper-trading cycle, then prints a report (no CLI flags)
 **Features**: Alert-based trading, risk management, performance tracking
 
 ### 2. apps/data_collector.py ✅ DATA MANAGEMENT  
@@ -354,8 +354,7 @@ apps/trader.py (Main Entry Point)
 │   └── src/core/trading_modes.py ✅
 ├── src/core/risk_manager.py ✅
 ├── src/alerts/alert_engine.py ✅ NEW
-│   ├── src/alerts/rules.py ✅ NEW
-│   └── src/alerts/monitor.py ✅ NEW
+│   └── src/alerts/rules.py ✅ NEW
 └── src/data/config.py ✅
     └── src/data/stock_registry.py ✅
 ```

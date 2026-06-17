@@ -104,18 +104,6 @@ class Alert:
 - AlertType: PRICE_CROSS, RSI_EXTREME, VOLUME_SPIKE, MACD_CROSS
 ```
 
-#### 3. Alert Monitor ✅ IMPLEMENTED
-**Module**: `src/alerts/monitor.py`
-**Status**: Alert monitoring system operational
-
-**Features**:
-```python
-# ✅ Real-time alert monitoring
-# ✅ Alert history tracking
-# ✅ Performance metrics collection
-# ✅ Alert frequency analysis
-```
-
 ### Integration Status ✅ OPERATIONAL
 
 #### Alert System Integration
@@ -126,12 +114,6 @@ The alert system is fully integrated and operational with:
 - RSI overbought/oversold levels from RSI_OVERBOUGHT, RSI_OVERSOLD
 - Volume analysis period from VOLUME_SMA_PERIOD
 - Proper logging integration with centralized logger
-
-**✅ Testing Integration**  
-- Comprehensive test suite in `tests/test_alerts.py`
-- All alert types tested with edge cases
-- Cooldown system validated
-- Callback system verified
 
 **✅ System Health Integration**
 - Alert system health checks in `apps/health_check.py`
@@ -231,15 +213,10 @@ src/alerts/
 - Alert data structure with metadata support
 - Comprehensive logging and cooldown management
 
-### Phase 2: Testing Integration ✅ COMPLETED
-**Status**: Full test coverage implemented
-
-**✅ Test Coverage**:
-- `tests/test_alerts.py`: Complete test suite with 169 lines
-- All alert types tested with edge cases
-- Cooldown system validation
-- Callback system verification
-- Multi-symbol support testing
+### Phase 2: Testing
+**Status**: Automated tests for the alert system are not yet implemented
+(`tests/` is currently empty). Alert behaviour is exercised manually via
+`apps/health_check.py` and the trading apps.
 
 ### Phase 3: System Integration ✅ COMPLETED
 **Status**: Integrated with health monitoring
