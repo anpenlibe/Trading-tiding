@@ -117,7 +117,8 @@ PRE_MARKET_OPEN = "09:00"
 POST_MARKET_CLOSE = "15:45"
 
 # Data Source Configuration
-DATA_SOURCE  = "zerodha"
+# Source selection/priority is handled by DataCollector._init_apis
+# (Zerodha → Yahoo → Mock); there is no single DATA_SOURCE switch.
 USE_MOCK_DATA= os.getenv("USE_MOCK_DATA", "false").lower() == "true"
 
 # Logging
@@ -134,8 +135,16 @@ LOGS_PATH = os.path.join(DATA_PATH, "logs")
 HISTORICAL_DATA_PATH = os.path.join(DATA_PATH, "historical")
 LIVE_DATA_PATH       = os.path.join(DATA_PATH, "live")
 
-# Database - UNIFIED PATH FOR HISTORICAL AND LIVE
-DB_PATH = os.path.join(DATA_PATH, "market_data.sqlite")
+# Database paths.
+# BUNDLED_DB_PATH is the read-only historical snapshot committed in the repo and
+# read by the backtester. Runtime collection (live/mock) writes to a SEPARATE DB
+# under the gitignored repo-root data/ dir, so running the trader never mutates
+# the committed snapshot. The runtime DB is seeded from the snapshot on first use
+# (see DatabaseManager) so the trader still has historical context.
+BUNDLED_DB_PATH   = os.path.join(DATA_PATH, "market_data.sqlite")          # src/data/ (committed)
+REPO_ROOT         = os.path.dirname(BASE_PATH)
+RUNTIME_DATA_PATH = os.path.join(REPO_ROOT, "data")
+DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")  # data/ (gitignored, runtime)
 
 # ============= AI API SETTINGS =============
 # Multi-Provider Fallback Architecture (2025-10-03 Refactor):

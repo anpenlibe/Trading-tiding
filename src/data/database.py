@@ -1,12 +1,14 @@
 """Database management for market data."""
 
+import os
+import shutil
 import sqlite3
 import pandas as pd
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any
 from src.interfaces import MarketData
-from src.data.config import DB_PATH, DEFAULT_PERIODS
+from src.data.config import DB_PATH, BUNDLED_DB_PATH, DEFAULT_PERIODS
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, 'database.log')
@@ -19,7 +21,22 @@ class DatabaseManager:
         """Initialize database connection."""
         self.db_path = db_path
         self.conn = None
+        self._seed_from_bundled()
         self._init_database()
+
+    def _seed_from_bundled(self):
+        """Seed a fresh runtime DB from the committed snapshot.
+
+        Lets the trader start with historical context while keeping all live/mock
+        writes out of the version-controlled snapshot. No-op when opening the
+        bundled snapshot itself or when the runtime DB already exists.
+        """
+        if (self.db_path != BUNDLED_DB_PATH
+                and not os.path.exists(self.db_path)
+                and os.path.exists(BUNDLED_DB_PATH)):
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            shutil.copy2(BUNDLED_DB_PATH, self.db_path)
+            logger.info(f"Seeded runtime DB from bundled snapshot -> {self.db_path}")
     
     def _init_database(self):
         """Initialize database with required tables."""

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL
+from src.data.config import SYMBOLS, BUNDLED_DB_PATH, INITIAL_CAPITAL
 from src.core.indicator_engine import calculate_all_indicators
 from src.interfaces import MarketData
 from src.utils.logger import setup_logger
@@ -216,7 +216,7 @@ class HistoricalSimulator:
     
     def __init__(self, config: SimulationConfig):
         self.config = config
-        self.data_provider = HistoricalDataProvider(DB_PATH)
+        self.data_provider = HistoricalDataProvider(BUNDLED_DB_PATH)
         self.simulation_data = None
         self.data_collector = None
         self.current_time = None
@@ -735,7 +735,7 @@ def main():
     symbols = args.symbols if args.symbols else SYMBOLS
     
     # Check available data
-    provider = HistoricalDataProvider(DB_PATH)
+    provider = HistoricalDataProvider(BUNDLED_DB_PATH)
     start_date, end_date = provider.get_data_range(symbols)
     provider.close()
     

@@ -34,12 +34,26 @@ def exhausted_brain():
     return brain
 
 
-def test_coordinator_raises_on_exhaustion():
+def test_coordinator_raises_on_exhaustion(monkeypatch):
     """call_with_fallback must RAISE (not return a junk string) so AIBrain can
-    apply its schema-aware fallback."""
-    from src.ai.provider_coordinator import ProviderCoordinator
+    apply its schema-aware fallback.
+
+    Note: the constructor does `fallback_chain or default`, so an empty list is
+    replaced by the real chain — we instead force the single provider to fail,
+    with no network calls.
+    """
+    from src.ai.provider_coordinator import ProviderCoordinator, ProviderConfig
     from src.exceptions import AIAnalysisError
-    coord = ProviderCoordinator(fallback_chain=[])  # no providers at all
+
+    coord = ProviderCoordinator(
+        fallback_chain=[ProviderConfig("groq", "fake-model", 100, "fake-key")]
+    )
+
+    def _always_fail(_config):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(coord, "_get_or_create_client", _always_fail)
+
     with pytest.raises(AIAnalysisError):
         coord.call_with_fallback("any prompt")
 
