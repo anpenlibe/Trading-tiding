@@ -1,5 +1,7 @@
-# TRADING SYSTEM FLOW ANALYSIS
-*Last Updated: 2025-09-12*
+# Trading System Flow Analysis
+
+How data and decisions move through the system. Pair with
+[`ALERT_BASED_TRADING_SYSTEM.md`](./ALERT_BASED_TRADING_SYSTEM.md) and [`api/`](./api/).
 
 ## PART 1: CURRENT ENTRY POINTS
 
@@ -19,7 +21,7 @@ The system has several applications for different use cases:
 
 ### 3. apps/backtest.py ✅ HISTORICAL TESTING
 **Purpose**: Backtesting on historical data
-**Entry**: `python apps/backtest.py [--auto] [--days N] [--symbols SYMBOL1,SYMBOL2]`
+**Entry**: `python apps/backtest.py [--auto] [--days N] [--symbols S1 S2 ...]`
 **Mode**: Historical simulation and performance analysis
 **Features**: Non-interactive mode, custom timeframes, multi-symbol support
 
@@ -65,7 +67,7 @@ The system has several applications for different use cases:
           ▼
 ┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
 │ 1. Fetch Market │────▶│ 2. Calculate │────▶│ 3. AI Decision  │
-│ Data (Recent)   │     │ Indicators   │     │ (Claude 3.5)    │
+│ Data (Recent)   │     │ Indicators   │     │ (AI Brain)      │
 └─────────────────┘     └──────────────┘     └─────────┬───────┘
                                                        │
                                                        ▼
@@ -95,8 +97,8 @@ The system has several applications for different use cases:
 │                 │
 │ • Database      │
 │ • ZerodhaAPI    │
-│ • MockAPI       │
-│ • CSV Files     │ 
+│ • YahooFinance  │
+│ • MockAPI       │ 
 └─────────┬───────┘
           │
           ▼
@@ -174,10 +176,10 @@ The system has several applications for different use cases:
                                │
                                ▼
 ┌─────────────────┐     ┌──────────────┐
-│ Claude API      │────▶│ Response     │
+│ AI Providers    │────▶│ Response     │
 │                 │     │ Parsing      │
-│ • Claude 3.5    │     │              │
-│   Sonnet        │     │ • Extract    │
+│ • Groq/Gemini/  │     │              │
+│   Claude        │     │ • Extract    │
 │ • Max Tokens    │     │   Signal     │
 │ • Temperature   │     │ • Parse JSON │
 └─────────────────┘     │ • Validate   │
@@ -208,7 +210,7 @@ The system has several applications for different use cases:
 │ Position Size   │────▶│ Trade        │
 │ Calculation     │     │ Validation   │
 │                 │     │              │
-│ • Capital * 2%  │     │ • Capital    │
+│ • Cap * 1.5%    │     │ • Capital    │
 │ • Stop Distance │     │   Available  │
 │ • Min/Max Size  │     │ • Position   │
 └─────────────────┘     │   Limits     │
@@ -264,17 +266,17 @@ The system has several applications for different use cases:
 ## PART 3: DATA PIPELINE
 
 ### Real-Time Data Flow
-1. **Collection**: DataCollector fetches from Zerodha API every 5 minutes
+1. **Collection**: DataCollector fetches via Zerodha → Yahoo → Mock (per cycle)
 2. **Validation**: DataValidator checks price/volume sanity
 3. **Storage**: DatabaseManager saves to SQLite with indicators
 4. **Caching**: MemoryCache provides fast access to recent data
 5. **Processing**: IndicatorEngine calculates technical indicators
 
 ### Historical Data Flow  
-1. **Batch Collection**: collect_historical_data.py fetches historical candles
+1. **Batch Collection**: `apps/data_collector.py` fetches historical candles
 2. **Processing**: Same validation and indicator pipeline as real-time
 3. **Storage**: Unified database schema with real-time data
-4. **Simulation**: historical_simulator.py replays data chronologically
+4. **Simulation**: `apps/backtest.py` replays the bundled snapshot chronologically
 
 ## PART 4: DECISION PIPELINE
 
@@ -292,7 +294,7 @@ Strategy Context (swing trading, market hours, symbols)
       ↓
 Formatted Prompt (JSON structure, clear instructions)
       ↓
-Claude API Call
+AI provider call (Groq → Gemini → Claude)
       ↓
 JSON Response Parsing
       ↓
@@ -300,7 +302,7 @@ Trading Signal (BUY/SELL/HOLD + parameters)
 ```
 
 ### Decision Quality Control
-1. **Confidence Threshold**: Signals below 60% confidence become HOLD
+1. **Confidence Guidance**: the prompt asks the AI to only BUY/SELL above ~0.6 confidence (guidance, not a hard code gate)
 2. **JSON Validation**: Malformed responses default to HOLD
 3. **Risk Validation**: Risk manager can reject AI signals
 4. **Position Limits**: Max position size and capital allocation enforced
@@ -341,11 +343,11 @@ Trading Signal (BUY/SELL/HOLD + parameters)
 ```
 apps/trader.py (Main Entry Point)
 ├── src/core/ai_brain.py ✅
-│   ├── src/core/prompt_builder.py ✅
+│   ├── src/ai/prompt_builder.py ✅
 │   ├── src/interfaces.py ✅
 │   └── src/utils/logger.py ✅
 ├── src/data_collector.py ✅
-│   ├── src/data/apis.py ✅
+│   ├── src/data/data_sources.py ✅
 │   ├── src/data/cache.py ✅
 │   ├── src/data/database.py ✅
 │   └── src/core/indicator_engine.py ✅
@@ -372,7 +374,9 @@ apps/
 ### External Dependencies
 ```
 Production:
-├── anthropic ✅           (Claude 3.5 Sonnet API)
+├── requests ✅            (Groq/Gemini REST)
+├── anthropic ✅           (Claude SDK only)
+├── yfinance ✅            (Yahoo backup)
 ├── kiteconnect ✅         (Zerodha API) 
 ├── pandas/numpy ✅        (Data processing)
 ├── sqlite3 ✅             (Database)
@@ -384,10 +388,9 @@ Development & Testing:
 └── argparse ✅            (CLI interfaces)
 ```
 
-### ✅ System Status Summary
-**Architecture**: Well-structured with clear separation of concerns  
-**Alert System**: Fully operational with 4 alert types  
-**Testing**: 100% test pass rate (39 tests)  
-**Health Monitoring**: Comprehensive system diagnostics  
-**Documentation**: Up-to-date and synchronized  
-**Scalability**: Event-driven architecture ready for expansion
+### System Status Summary
+**Architecture**: layered with clear separation of concerns (apps → core → data/ai/alerts)
+**Alert System**: 4 rule types implemented; default run uses the polling cycle
+**Testing**: a focused regression suite under `tests/` (run `python -m pytest`)
+**Data**: live (Zerodha → Yahoo) or the bundled snapshot for offline backtests
+**Provider chain**: Groq → Gemini → Claude → rule-based, with circuit breakers

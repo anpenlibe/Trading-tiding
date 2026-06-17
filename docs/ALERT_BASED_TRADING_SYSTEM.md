@@ -1,44 +1,49 @@
-# Alert-Based Trading System - Implementation Status
+# Alert-Based Trading System — Design & Roadmap
 
-**Document Version**: 2.0  
-**Date**: 2025-09-12  
-**Author**: AI Trading System Development Team  
-**Status**: ✅ **IMPLEMENTED** - Core alert system operational
-**Purpose**: Documentation of the implemented alert-based trading system
+**Purpose**: Design rationale and roadmap for the event-driven alert system.
+This is a planning document: it mixes **what's built today** with **proposed
+extensions**. Each section is labelled — treat anything under "Proposed" /
+"Roadmap" as design intent, not shipped code.
 
----
-
-## 🎯 Executive Summary
-
-### Problem Statement ✅ SOLVED
-The previous system made continuous API calls every 5 minutes, resulting in high costs. The alert-based system now triggers API calls only when significant market conditions are detected.
-
-### Solution Overview ✅ IMPLEMENTED
-**Alert-based trading system** successfully implemented with:
-- Event-driven API calls triggered by market conditions
-- Significant cost reduction through selective monitoring
-- Maintained decision quality with faster response times
-- Comprehensive alert rule system
-
-### Achieved Outcomes
-- **Event-Driven Architecture**: API calls only on significant market events
-- **Smart Monitoring**: Multiple alert types (RSI, MACD, Volume, Price)
-- **Cooldown System**: Prevents alert spam and manages costs
-- **Extensible Framework**: Easy to add new alert rules
+> **Built today:** the `AlertEngine`, four rule types (`PriceCrossRule`,
+> `RSIExtremeRule`, `VolumeSpikRule`, `MACDCrossRule`), cooldown + callbacks, and
+> wiring in `apps/trader.py`. The default `trader.py` run still uses the polling
+> `run_trading_cycle()`; the continuous event-driven loop is `run_alert_mode()`.
 
 ---
 
-## 📊 Current System Analysis
+## 🎯 Goal
 
-### Cost Breakdown (Monthly)
-| Component | Current Usage | Cost |
+A polling loop runs AI analysis on every symbol every interval, regardless of
+whether anything moved — most of those (paid or rate-limited) AI calls are
+wasted on quiet markets. The alert system instead runs **cheap rule checks** on
+incoming data and only fires the **expensive AI call** when a rule trips.
+
+### Design goals
+- **Event-driven**: AI analysis only on significant market events
+- **Multiple signal types**: RSI, MACD, volume, price
+- **Cooldown system**: prevents alert spam
+- **Extensible**: easy to add new rule types
+
+---
+
+## 📊 Cost rationale (illustrative)
+
+> These figures are **hypothetical projections** for a *paid* always-polling
+> setup, used to motivate the event-driven design. The current bot runs on free
+> tiers (Groq free tier, Yahoo/bundled data), so real spend is ~$0 — but the
+> *waste* argument (analysing quiet markets) still holds, and matters once you
+> hit rate limits or move to paid APIs.
+
+### Illustrative cost of always-polling (paid APIs, monthly)
+| Component | Usage | Cost |
 |-----------|---------------|------|
 | **Market Data API** | 13,200 calls | $66.00 |
-| **Claude AI API** | 19.8M tokens | $59.40 |
+| **AI API** | 19.8M tokens | $59.40 |
 | **Total Monthly Cost** | - | **$125.40** |
 | **Annual Cost** | - | **$1,504.80** |
 
-### Usage Pattern
+### Usage Pattern (assumed)
 - **Symbols**: 8 (RELIANCE, SBIN, ONGC, INFY, ICICIBANK, ITC, TATAMOTORS, AXISBANK)
 - **Frequency**: Every 5 minutes during market hours
 - **Market Hours**: 6.25 hours/day (9:15 AM - 3:30 PM IST)
@@ -156,7 +161,7 @@ Fetch Fresh Market Data (API Call)
     ↓
 Calculate Technical Indicators
     ↓
-AI Analysis (Claude API Call) 
+AI Analysis (provider fallback chain: Groq → Gemini → Claude) 
     ↓
 Risk Assessment
     ↓
@@ -193,18 +198,17 @@ Based on typical market conditions:
 
 ---
 
-## 🛠️ ✅ Implementation Status - COMPLETED
+## 🛠️ Implementation Status
 
-### Phase 1: Core Alert Infrastructure ✅ COMPLETED
-**Status**: All deliverables implemented and tested
+### Phase 1: Core Alert Infrastructure — built
+**Status**: implemented and wired into `apps/trader.py` (not yet unit-tested)
 
-**✅ Created Modules**:
+**Modules**:
 ```
 src/alerts/
-├── __init__.py           ✅ Basic package structure
-├── alert_engine.py       ✅ AlertEngine, AlertRule, Alert classes
-├── rules.py             ✅ PriceCrossRule, RSIExtremeRule, etc.
-└── monitor.py           ✅ Alert monitoring and tracking
+├── __init__.py           Package structure
+├── alert_engine.py       AlertEngine, AlertRule, Alert classes
+└── rules.py              PriceCrossRule, RSIExtremeRule, VolumeSpikRule, MACDCrossRule
 ```
 
 **✅ Integrated Features**:
@@ -218,18 +222,23 @@ src/alerts/
 (`tests/` is currently empty). Alert behaviour is exercised manually via
 `apps/health_check.py` and the trading apps.
 
-### Phase 3: System Integration ✅ COMPLETED
-**Status**: Integrated with health monitoring
+### Phase 3: System Integration — partial
+**Status**: wired into the trader; health check only does an import smoke-test
 
-**✅ Health Check Integration**:
-- Alert system validation in `apps/health_check.py`
-- Import verification and functionality testing
-- System reliability monitoring
-- Error tracking integration
+- `apps/trader.py` arms rules and routes fired alerts to `_analyze_and_trade`
+- `apps/health_check.py` imports `src.alerts.alert_engine` (import check only —
+  no behavioural alert validation yet)
 
 ---
 
-## 🎯 Alert Rule Specifications
+## 🎯 Alert Rule Specifications — PROPOSED (roadmap)
+
+> ⚠️ **Not implemented.** The classes below (`RSI_OverboughtAlert`,
+> `MACD_BullishCrossover`, `PriceGapAlert`, `DrawdownAlert`, etc.) are a *design
+> sketch* of richer rules. The shipped rules are the four in
+> [`src/alerts/rules.py`](../src/alerts/rules.py): `PriceCrossRule`,
+> `RSIExtremeRule`, `VolumeSpikRule`, `MACDCrossRule`. Treat this section as the
+> wishlist for where the rule system could go.
 
 ### Technical Indicator Alerts
 
@@ -341,9 +350,9 @@ class ConcentrationAlert(AlertRule):
 - **Mitigation**: Fallback to continuous monitoring, redundant systems
 - **Monitoring**: System health checks, alert system SLA tracking
 
-### Risk Controls
+### Risk Controls (proposed knobs — not yet in `config.py`)
 ```python
-# Built-in Risk Controls
+# Proposed safety knobs for a continuous alert loop
 MAX_ALERTS_PER_HOUR = 20        # Prevent alert spam
 MIN_ALERT_INTERVAL = 300        # 5-minute minimum between alerts
 ALERT_CONFIDENCE_THRESHOLD = 0.6 # Only high-confidence alerts
@@ -375,22 +384,20 @@ FALLBACK_MODE_ENABLED = True    # Fallback to continuous monitoring
 
 ---
 
-## 📊 ✅ Current System Status
+## 📊 Current System Status
 
-### Operational Capabilities
-**✅ Alert System Fully Operational**
-- 4 alert rule types implemented and tested
-- Cooldown management prevents alert spam  
+### What works today
+- 4 alert rule types implemented and wired into `apps/trader.py`
+- Cooldown management prevents alert spam
 - Callback system for extensible alert handling
-- Comprehensive test coverage (100% pass rate)
-- Integrated health monitoring and validation
+- Exercised via `apps/health_check.py` (no dedicated alert unit tests yet)
 
-### Available Alert Rules
+### Available Alert Rules (shipped)
 ```python
-✅ PriceCrossRule        # Price threshold crossovers
-✅ RSIExtremeRule       # RSI overbought/oversold detection  
-✅ VolumeSpikRule       # Volume surge identification
-✅ MACDCrossRule        # MACD signal line crossovers
+PriceCrossRule        # Price threshold crossovers
+RSIExtremeRule        # RSI overbought/oversold detection
+VolumeSpikRule        # Volume surge identification
+MACDCrossRule         # MACD signal line crossovers
 ```
 
 ### System Integration Status
@@ -418,7 +425,5 @@ FALLBACK_MODE_ENABLED = True    # Fallback to continuous monitoring
 
 ---
 
-**Document Status**: ✅ IMPLEMENTATION COMPLETE  
-**System Status**: ✅ FULLY OPERATIONAL  
-**Test Coverage**: ✅ 100% PASSING  
-**Last Updated**: 2025-09-12
+**Document type**: design + roadmap (built sections are live; "Proposed" /
+"Roadmap" sections are intent, not shipped code).
