@@ -181,6 +181,18 @@ The Nifty 50 index (`^NSEI`) is always included for market-regime context.
 - **Risk guards** — per-trade risk, daily loss, and max-drawdown limits, plus a
   >20% price-move circuit breaker on incoming data.
 
+## Testing
+
+A focused regression suite covers the core trading logic (risk manager, paper
+trader, config helpers, AI fallback). It's deterministic and makes no network or
+AI-provider calls, so it runs in well under a second:
+
+```bash
+python -m pytest          # run all tests
+```
+
+See [`tests/README.md`](./tests/README.md) for what each file pins.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -196,8 +208,9 @@ Logs are written under `data/logs/`.
 
 - **Research / paper-trading focus.** Live-trading code paths exist but are gated
   and lightly exercised — treat live use as experimental and at your own risk.
-- **No automated test suite ships yet.** `pytest` is listed as a dev dependency;
-  contributions adding tests are welcome.
+- **Test coverage is focused, not exhaustive.** A regression suite pins the core
+  trading logic (see [Testing](#testing)); higher layers (live data, real
+  provider calls, full backtests) are exercised manually. Contributions welcome.
 - **Bundled market data.** A historical OHLCV snapshot ships as a SQLite file so
   backtesting works offline; it is public market data, not secrets.
 
