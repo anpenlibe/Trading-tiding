@@ -252,7 +252,16 @@ class HistoricalSimulator:
         if self.config.end_date > end_date:
             logger.warning(f"End date {self.config.end_date} is after available data {end_date}")
             self.config.end_date = end_date
-        
+
+        # Guard against an inverted window (requested start later than the data's
+        # end) so we never silently "simulate 0 time points".
+        if self.config.start_date > self.config.end_date:
+            logger.warning(
+                f"Start {self.config.start_date} is after available end {self.config.end_date}; "
+                f"clamping start to available start {start_date}"
+            )
+            self.config.start_date = start_date
+
         logger.info(f"Simulation period: {self.config.start_date} to {self.config.end_date}")
         return True
     
@@ -749,26 +758,33 @@ def main():
     config = create_default_config()
     config.symbols = symbols  # Use the selected symbols
     config.simulation_interval_minutes = args.sim_interval
-    
+
+    # Relative windows ("last N days") are anchored to the last available data
+    # date, NOT today — otherwise they fall entirely outside the bundled snapshot.
+    data_end = pd.Timestamp(end_date)
+
     if args.start_date and args.end_date:
         config.start_date = args.start_date
         config.end_date = args.end_date
         config.speed_multiplier = args.speed
     elif choice == "1":
         days_to_simulate = args.days if args.auto else 3
-        config.start_date = (datetime.now() - timedelta(days=days_to_simulate)).strftime('%Y-%m-%d')
+        config.start_date = (data_end - timedelta(days=days_to_simulate)).strftime('%Y-%m-%d')
+        config.end_date = end_date
         config.speed_multiplier = args.speed if args.auto else 5.0
     elif choice == "2":
-        config.start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        config.start_date = (data_end - timedelta(days=7)).strftime('%Y-%m-%d')
+        config.end_date = end_date
         config.speed_multiplier = 10.0
     elif choice == "3":
-        config.start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        config.start_date = (data_end - timedelta(days=30)).strftime('%Y-%m-%d')
+        config.end_date = end_date
         config.speed_multiplier = 50.0
     elif choice == "4":
         if args.auto:
             # Use reasonable defaults for automated mode
-            config.start_date = (datetime.now() - timedelta(days=args.days)).strftime('%Y-%m-%d')
-            config.end_date = datetime.now().strftime('%Y-%m-%d')
+            config.start_date = (data_end - timedelta(days=args.days)).strftime('%Y-%m-%d')
+            config.end_date = end_date
             config.speed_multiplier = args.speed
         else:
             config.start_date = input(f"Start date (YYYY-MM-DD, earliest: {start_date}): ").strip()
