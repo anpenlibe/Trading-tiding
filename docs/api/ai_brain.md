@@ -142,9 +142,10 @@ ClaudeAI = AIBrain  # Deprecated alias
 ```
 AIBrain
   └── ProviderCoordinator
-       ├── Groq llama-3.3-70b (Primary)
-       ├── Groq llama-3.1-70b (Secondary)
-       ├── Gemini 2.5 Pro (Tertiary)
+       ├── Groq gpt-oss-120b (Primary)
+       ├── Groq llama-3.3-70b (Secondary)
+       ├── Groq gpt-oss-20b (Tertiary)
+       ├── Gemini 2.5 Pro
        ├── Claude 3.5 Sonnet (Optional)
        └── Rule-based fallback (Final)
 ```

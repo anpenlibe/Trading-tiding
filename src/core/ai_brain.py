@@ -2,7 +2,8 @@
 
 Refactored architecture:
 - Uses ProviderCoordinator for API calls with automatic fallback
-- Supports Groq (llama-3.3 → llama-3.1) → Gemini Pro → Claude chain
+- Default chain: Groq (gpt-oss-120b → llama-3.3-70b → gpt-oss-20b) → Gemini Pro
+  → Claude → rule-based
 - Maintains backward compatibility with existing applications
 """
 
@@ -27,7 +28,7 @@ class AIBrain(BaseDecisionModel):
     """AI decision model with multi-provider fallback support.
 
     Uses ProviderCoordinator internally for automatic fallback:
-    Groq llama-3.3 → Groq llama-3.1 → Gemini Pro → Claude → rule-based
+    Groq gpt-oss-120b → llama-3.3-70b → gpt-oss-20b → Gemini Pro → Claude → rule-based
     """
 
     def __init__(self, api_key: Optional[str] = None, temperature: float = 0.6):
@@ -353,7 +354,7 @@ class AIBrain(BaseDecisionModel):
                                                    context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Analyze portfolio with automatic multi-provider fallback.
 
-        Coordinator handles fallback: Groq llama-3.3 → Groq llama-3.1 → Gemini Pro → rule-based
+        Coordinator handles fallback: Groq gpt-oss-120b → llama-3.3-70b → gpt-oss-20b → Gemini Pro → Claude → rule-based
         """
         return self._analyze_portfolio_batch(portfolio_data, portfolio_indicators, context)
 

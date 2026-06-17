@@ -8,8 +8,8 @@ This module provides a robust multi-provider AI system with automatic fallback a
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                          ClaudeAI                                │
-│                    (Backward Compatible)                         │
+│                           AIBrain                                │
+│            (ClaudeAI is a deprecated back-compat alias)          │
 │                   src/core/ai_brain.py                           │
 └──────────────────────────┬───────────────────────────────────────┘
                            │
@@ -32,20 +32,21 @@ This module provides a robust multi-provider AI system with automatic fallback a
 
 ## Default Fallback Chain
 
-1. **Groq llama-3.3-70b** (Primary - ultra-fast, 5s for 20 stocks)
-2. **Groq llama-3.1-70b** (Secondary - separate rate limit pool)
-3. **Gemini Pro** (Tertiary - reliable but slower)
-4. **Claude** (Optional - if configured)
-5. **Rule-based** (Final fallback)
+The exact chain is built from environment config (a provider is included only if
+its API key is set and it appears in `ENABLED_AI_PROVIDERS`):
+
+1. **Groq `openai/gpt-oss-120b`** (Primary - best quality + capacity)
+2. **Groq `llama-3.3-70b-versatile`** (Secondary - separate rate limit pool)
+3. **Groq `openai/gpt-oss-20b`** (Tertiary - fast fallback)
+4. **Gemini `gemini-2.5-pro`** (reliable but slower)
+5. **Claude `claude-3-5-sonnet`** (premium - if configured)
+6. **Rule-based** (final fallback - RSI-based, no API)
 
 ## Key Features
 
 ### 1. Multi-Model Groq Support
-Each Groq model has **separate rate limit pools**:
-- `llama-3.3-70b-versatile`: 30 RPM, 6,000 TPM, 1,000 RPD
-- `llama-3.1-70b-versatile`: 30 RPM, 6,000 TPM, 1,000 RPD
-
-Using both models provides **2x capacity** (60 RPM total).
+Each Groq model has **separate rate limit pools**, so the three Groq entries
+above give independent capacity before the chain moves on to Gemini/Claude.
 
 ### 2. Per-Provider Circuit Breakers
 Each provider has independent failure tracking:
@@ -122,8 +123,8 @@ coordinator = ProviderCoordinator()
 from src.ai.provider_coordinator import ProviderConfig
 
 chain = [
-    ProviderConfig("groq", "llama-3.3-70b-versatile", 3000),
-    ProviderConfig("groq", "llama-3.1-70b-versatile", 3000),
+    ProviderConfig("groq", "openai/gpt-oss-120b", 6000),
+    ProviderConfig("groq", "llama-3.3-70b-versatile", 6000),
     ProviderConfig("gemini", "gemini-2.5-pro", 16000),
 ]
 coordinator = ProviderCoordinator(fallback_chain=chain)
@@ -185,10 +186,11 @@ CLAUDE_TEMPERATURE=0.3
 ```
 
 ### Multi-Model Fallback
-When Groq llama-3.3 hits rate limit:
-1. Coordinator catches rate limit error
-2. Switches to llama-3.1 (separate rate pool)
-3. If both Groq models exhausted, falls back to Gemini Pro
+When the primary Groq model (gpt-oss-120b) hits a rate limit:
+1. Coordinator catches the rate limit error
+2. Switches to the next Groq model (llama-3.3-70b, then gpt-oss-20b — each a
+   separate rate pool)
+3. If all Groq models are exhausted, falls back to Gemini, then Claude
 4. Circuit breakers prevent repeated failures
 
 ## Testing
@@ -262,7 +264,7 @@ ai.coordinator.reset_all_circuits()
 Check logs for provider-specific rate limit hits:
 ```
 2025-10-03 10:15:23 - Rate limit hit for groq:llama-3.3-70b-versatile
-2025-10-03 10:15:23 - Switching provider: groq:llama-3.3 → groq:llama-3.1
+2025-10-03 10:15:23 - Switching provider: groq:openai/gpt-oss-120b → groq:llama-3.3-70b-versatile
 ```
 
 ### Circuit Breaker Open
