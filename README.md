@@ -153,7 +153,7 @@ src/alerts/      event-driven alert engine and rules
 src/monitoring/  performance tracking and dashboard
 src/utils/       logging, database optimization
 scripts/         operational helpers (e.g. Zerodha token generation)
-docs/            user docs; docs/dev/ holds internal notes & research
+docs/            architecture notes and per-module API reference (docs/api/)
 data/            runtime data — logs, caches, DBs (gitignored)
 ```
 
@@ -219,7 +219,6 @@ Logs are written under `data/logs/`.
 - [`docs/SYSTEM_FLOW.md`](./docs/SYSTEM_FLOW.md) — system flow and architecture
 - [`docs/ALERT_BASED_TRADING_SYSTEM.md`](./docs/ALERT_BASED_TRADING_SYSTEM.md) — alert system details
 - [`docs/api/`](./docs/api/) — per-module API notes
-- [`docs/dev/`](./docs/dev/) — internal development notes & research (not needed for normal use)
 
 ## License
 
