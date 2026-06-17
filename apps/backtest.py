@@ -22,20 +22,15 @@ import time
 import sqlite3
 import argparse
 import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-import logging
 from dataclasses import dataclass
-import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL
-from src.data_collector import DataCollector  # FIXED: No more IndicatorCalculator import
-from src.core.indicator_engine import calculate_all_indicators  # FIXED: Use unified indicator engine
+from src.core.indicator_engine import calculate_all_indicators
 from src.interfaces import MarketData
 from src.utils.logger import setup_logger
 

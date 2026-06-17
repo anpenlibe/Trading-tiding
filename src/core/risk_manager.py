@@ -144,7 +144,10 @@ class SimpleRiskManager(BaseRiskManager):
                 position_size = max(1, position_size)
             else:
                 position_size = 0  # Even 1 share exceeds position limits
-                print(f"Stock price ₹{entry_price:,.0f} exceeds capital position limit of ₹{capital * MAX_POSITION_SIZE:,.0f}")
+                logger.warning(
+                    f"Stock price ₹{entry_price:,.0f} exceeds capital "
+                    f"position limit of ₹{capital * MAX_POSITION_SIZE:,.0f}"
+                )
         else:
             position_size = max(1, position_size)
 
@@ -381,23 +384,3 @@ class SimpleRiskManager(BaseRiskManager):
         
         return suggestions
 
-
-# Example usage and integration points
-if __name__ == "__main__":
-    # Initialize risk manager
-    risk_mgr = SimpleRiskManager()
-    
-    # Example: Calculate position size for a trade
-    risk_params = risk_mgr.calculate_risk_parameters(
-        symbol="RELIANCE",
-        signal_type="BUY",
-        entry_price=2850,
-        capital=10000,
-        stop_loss=2790,  # Custom stop
-        target=2950      # Custom target
-    )
-    
-    print(f"Position size: {risk_params.position_size} shares")
-    print(f"Risk amount: ₹{risk_params.risk_amount:.2f}")
-    print(f"Total cost: ₹{risk_params.total_cost:.2f}")
-    print(f"Risk-reward ratio: {risk_params.risk_reward_ratio:.1f}")

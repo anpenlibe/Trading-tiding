@@ -11,17 +11,15 @@ and calculate performance metrics.
 
 import os
 import json
-import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
-from src.interfaces import TradingSignal
 import pandas as pd
 
 from src.interfaces import BaseTradingExecutor
 from src.data.config import (
     INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
-    MAX_POSITION_SIZE, MIN_TRADE_VALUE, DEFAULT_TRADE_HISTORY_LIMIT,
+    DEFAULT_TRADE_HISTORY_LIMIT,
     EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 )
 from src.utils.logger import setup_logger
@@ -625,38 +623,4 @@ class PaperTrader(BaseTradingExecutor):
         return gross_profit / gross_loss
 
 
-def main():
-    """Test paper trader"""
-    print("Testing Paper Trader...")
-    
-    trader = PaperTrader(initial_capital=10000)
-    
-    # Test BUY order
-    buy_signal = {
-        "symbol": "RELIANCE",
-        "signal": "BUY",
-        "confidence": 0.85,
-        "position_size": 3,
-        "stop_loss": 2800,
-        "target": 2950,
-        "reasoning": "Test buy signal"
-    }
-    
-    result = trader.execute_trade(buy_signal, current_price=2850)
-    print(f"\nBUY Result: {result}")
-    
-    # Check account
-    account = trader.get_account_info()
-    print(f"\nAccount Info: {json.dumps(account, indent=2)}")
-    
-    # Update prices
-    trader.update_positions({"RELIANCE": 2900})
-    
-    # Check positions
-    positions = trader.get_positions()
-    print(f"\nPositions: {json.dumps(positions, indent=2)}")
-
-
-if __name__ == "__main__":
-    main()
 

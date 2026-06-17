@@ -8,7 +8,6 @@ Modified: 2025-06-12
 
 import logging
 import os
-from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Optional
 
@@ -177,27 +176,3 @@ def get_monitor_logger() -> TradingLogger:
     """Get logger for monitoring module"""
     return TradingLogger('monitor', 'monitor.log')
 
-
-# Example usage
-if __name__ == "__main__":
-    # Test the logger
-    logger = get_data_logger()
-    
-    # Test different log types
-    logger.log_api_call("Dhan", "RELIANCE", True, 0.234)
-    logger.log_api_call("Dhan", "TCS", False, 1.234, "Connection timeout")
-    logger.log_data_quality("INFY", "Price jumped 25% in 5 minutes", "WARNING")
-    logger.log_indicator_calculation("HDFC", "RSI_14", 67.8923)
-    logger.log_cache_operation("GET", "ICICIBANK", True)
-    logger.log_database_operation("INSERT", "price_data", 10, 0.045)
-    
-    # Test daily summary
-    logger.log_daily_summary({
-        "Total API Calls": 1560,
-        "Successful": 1542,
-        "Failed": 18,
-        "Success Rate": "98.85%",
-        "Average Response Time": "0.187s",
-        "Cache Hit Rate": "76.4%",
-        "Data Points Collected": 7800
-    })
