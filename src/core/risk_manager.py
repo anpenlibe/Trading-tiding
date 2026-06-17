@@ -264,6 +264,12 @@ class SimpleRiskManager(BaseRiskManager):
         if signal_type == 'SELL':
             return True, None
 
+        # A BUY needs a price to size the position. Bail cleanly instead of
+        # crashing on `None * slippage` downstream (which callers swallow as a
+        # silent non-execution).
+        if entry_price is None:
+            return False, "No entry price provided for trade"
+
         # Check if we already have a position in this symbol
         if symbol in current_positions:
             return False, f"Already have open position in {symbol}"

@@ -386,7 +386,13 @@ class ClaudeTrader:
                 return False
             
             current_price = df.iloc[-1]['close']
-            
+
+            # The fill happens at the current market price; stamp it on the
+            # signal so risk sizing/validation don't choke on a missing
+            # entry_price (AI decisions don't always include one).
+            if signal.get('entry_price') is None:
+                signal['entry_price'] = current_price
+
             # Get account info
             account_info = self.paper_trader.get_account_info()
             signal['available_capital'] = account_info['available_capital']

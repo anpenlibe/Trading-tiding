@@ -568,6 +568,12 @@ class HistoricalSimulator:
     def _execute_simulated_trade(self, symbol: str, signal: Dict, current_price: float, timestamp: pd.Timestamp) -> Dict:
         """Execute a trade using the unified pipeline approach"""
         try:
+            # The fill happens at the current market price; stamp it on the
+            # signal so risk validation/sizing don't crash on a missing
+            # entry_price (otherwise swallowed as a silent non-execution).
+            if signal.get('entry_price') is None:
+                signal['entry_price'] = current_price
+
             # Validate trade with risk manager if available
             if self.risk_manager:
                 # Get current account info
