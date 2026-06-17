@@ -253,9 +253,17 @@ class SimpleRiskManager(BaseRiskManager):
             Tuple of (is_valid, rejection_reason)
         """
         symbol = signal.get('symbol')
+        signal_type = signal.get('signal', 'BUY')
         entry_price = signal.get('entry_price', signal.get('price'))
         available_capital = signal.get('available_capital', 0)
-        
+
+        # A SELL closes an existing position. The capital / position-size /
+        # "already hold this symbol" checks below are all for OPENING (BUY);
+        # applying them to a SELL would reject every exit. The executor
+        # (_execute_sell) validates that a position actually exists.
+        if signal_type == 'SELL':
+            return True, None
+
         # Check if we already have a position in this symbol
         if symbol in current_positions:
             return False, f"Already have open position in {symbol}"

@@ -317,13 +317,12 @@ class PaperTrader(BaseTradingExecutor):
             }
         
         position = self.open_positions[symbol]
-        
-        # Validate quantity
-        if quantity > position.quantity:
-            return {
-                "status": "REJECTED",
-                "reason": f"Cannot sell {quantity}, only have {position.quantity}"
-            }
+
+        # A SELL closes the whole position. The requested quantity from an AI
+        # SELL is unreliable (it's sized as if opening), and partial exits don't
+        # fit the one-record-per-position model, so exit in full — consistent
+        # with the stop-loss / target auto-closes.
+        quantity = position.quantity
         
         # Calculate proceeds and P&L
         gross_proceeds = quantity * price
@@ -345,21 +344,25 @@ class PaperTrader(BaseTradingExecutor):
         
         # Update capital and tracking
         self.available_capital += net_proceeds
-        self.current_capital = self.available_capital + sum(
-            pos.position_value for pos in self.open_positions.values()
-        )
         self.total_commission += commission
-        
+
         # Track wins/losses
         if realized_pnl > 0:
             self.winning_trades += 1
         else:
             self.losing_trades += 1
-        
+
         # Move to closed trades
         self.closed_trades.append(position)
         del self.open_positions[symbol]
-        
+
+        # Recompute capital AFTER removing the closed position (else it gets
+        # double-counted, since its proceeds are already in available_capital),
+        # using the market value of the remaining positions.
+        self.current_capital = self.available_capital + sum(
+            pos.quantity * pos.current_price for pos in self.open_positions.values()
+        )
+
         # Update peak and drawdown
         if self.current_capital > self.peak_capital:
             self.peak_capital = self.current_capital
@@ -390,7 +393,9 @@ class PaperTrader(BaseTradingExecutor):
     
     def update_positions(self, current_prices: Dict[str, float]):
         """Update unrealized P&L for open positions"""
-        for symbol, position in self.open_positions.items():
+        # Iterate over a copy: a stop-loss / target hit below calls _execute_sell,
+        # which deletes from self.open_positions (can't mutate during iteration).
+        for symbol, position in list(self.open_positions.items()):
             if symbol in current_prices:
                 current_price = current_prices[symbol]
                 position.current_price = current_price
