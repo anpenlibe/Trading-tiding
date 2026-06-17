@@ -297,8 +297,12 @@ def main():
                     monitor.export_daily_report()
                     print("✅ Daily report exported automatically")
             else:
-                # Interactive mode
-                export = input("\nExport daily report? (y/n): ").strip().lower()
+                # Interactive prompt — skip gracefully when stdin isn't a TTY
+                # (piped / automated runs) instead of crashing with EOFError.
+                try:
+                    export = input("\nExport daily report? (y/n): ").strip().lower()
+                except EOFError:
+                    export = 'n'
                 if export == 'y':
                     monitor.export_daily_report()
             

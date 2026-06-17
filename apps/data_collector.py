@@ -186,7 +186,8 @@ def main():
     logging.info("Historical data collection completed")
     logging.info(f"Total processed: {total_processed}")
     logging.info(f"Total saved: {total_saved}")
-    logging.info(f"Overall success rate: {(total_saved/total_processed*100):.1f}%")
+    success_rate = (total_saved / total_processed * 100) if total_processed else 0.0
+    logging.info(f"Overall success rate: {success_rate:.1f}%")
     
     # Generate and display collection summary
     try:

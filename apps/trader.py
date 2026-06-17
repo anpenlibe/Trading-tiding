@@ -280,6 +280,7 @@ class ClaudeTrader:
                 'symbols_processed': 0,
                 'signals_generated': 0,
                 'trades_executed': 0,
+                'decisions': [],
                 'errors': [],
                 'cycle_duration': 0.0
             }
@@ -297,21 +298,38 @@ class ClaudeTrader:
                         continue
                     
                     cycle_summary['signals_generated'] += 1
-                    
+                    self.total_signals += 1
+
                     # Execute trade with error handling
+                    execution = {'status': 'SKIPPED'}  # HOLD / no action
                     if signal['signal'] != 'HOLD':
                         if self._execute_trade_safely(symbol, signal):
                             cycle_summary['trades_executed'] += 1
-                    
+                            self.executed_trades += 1
+                            execution = {'status': 'EXECUTED'}
+                        else:
+                            self.skipped_signals += 1
+                            execution = {'status': 'REJECTED'}
+                    else:
+                        self.skipped_signals += 1
+
+                    # Record the decision so the report and CLI can surface it
+                    record = {'symbol': symbol, 'signal': signal, 'execution': execution}
+                    cycle_summary['decisions'].append(record)
+                    self.decision_history.append(record)
+
                     cycle_summary['symbols_processed'] += 1
-                    
+
                 except Exception as e:
                     logger.error(f"Error processing {symbol}: {e}")
                     cycle_summary['errors'].append(f"{symbol}: {str(e)}")
+                    self.error_count += 1
                     continue
             
             # Update tracking
             self.trading_cycles += 1
+            if len(self.decision_history) > 100:
+                self.decision_history = self.decision_history[-100:]
             cycle_summary['cycle_duration'] = time.time() - start_time
             
             # Log cycle summary
