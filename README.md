@@ -1,316 +1,227 @@
-# 🤖 AI Trading System
+# trading-tiding
 
-**AI-Powered Trading Bot for NSE Indian Stock Market**
+**AI-assisted swing-trading research bot for the NSE (Indian equities).**
 
-Automated trading system using AI (Claude/Gemini) for market analysis and decision making with comprehensive risk management.
+`trading-tiding` collects market data for a curated set of NSE stocks, computes
+technical indicators, and asks a large language model to make paper-trading
+decisions under explicit risk limits. It is an **educational / research project
+and a paper-trading simulator — not investment advice.** See the
+[disclaimer](#disclaimer) before doing anything with real money.
 
 ---
 
-## 🚀 Quick Start
+## Highlights
 
-### **1. Installation**
+- **Multi-provider AI with automatic fallback** — Groq → Gemini → Claude, plus a
+  rule-based fallback if every provider is unavailable. Per-provider circuit
+  breakers and rate-limit handling are built in.
+- **Risk-managed paper trading** — position sizing, per-trade risk caps, daily
+  loss limits, and max-drawdown guards before any simulated order.
+- **Event-driven alerts** — instead of polling on a fixed timer, the alert engine
+  reacts to price moves, RSI extremes, volume spikes, and MACD crossovers.
+- **Offline backtesting** — a bundled historical OHLCV snapshot lets the
+  backtester run with no API keys at all.
+- **Safety first** — paper trading is the default; mock data is blocked in live
+  mode; live trading requires deliberate configuration.
+
+---
+
+## How it works
+
+```
+apps/  ──►  src/core  ──►  src/ai          (decisions)
+  │           │      └──►  src/data         (market data, config, registry)
+  │           └────────►   src/alerts       (event detection)
+  └─ CLI entry points      src/utils        (logging, db tools)
+```
+
+1. **Data** — live OHLCV comes from Zerodha Kite Connect; backtests read the
+   bundled historical SQLite snapshot (offline, no keys). If Zerodha is
+   unavailable in paper mode, the collector falls back to a built-in **mock**
+   generator (random bars, for pipeline testing only). *(A `YahooFinanceAPI` is
+   implemented in `data_sources.py` but is not currently wired into the
+   collector.)*
+2. **Indicators** — RSI, MACD, and SMAs are computed per symbol.
+3. **AI decision** — `src/ai/provider_coordinator.py` builds a market-context
+   prompt and queries the first available provider in the fallback chain. Groq
+   and Gemini are called over their REST APIs (via `requests`); Claude uses the
+   `anthropic` SDK. Each decision carries a signal, a confidence score, and the
+   model's reasoning.
+4. **Risk + execution** — `SimpleRiskManager` sizes the position and enforces
+   limits; `PaperTrader` simulates the fill with slippage and commission and
+   tracks P&L.
+
+## Requirements
+
+- **Python 3.10+** (developed on 3.12; `pandas`/`numpy` pins require ≥3.9)
+- At least **one** AI provider API key (Groq, Gemini, or Anthropic)
+- *(Optional)* a Zerodha Kite Connect account for live NSE data — without it you
+  can still run **backtests** against the bundled dataset (live/paper cycles fall
+  back to mock data)
+
+## Installation
+
 ```bash
-# Clone and setup
-git clone <repository>
+git clone <repository-url>
 cd trading-tiding
+
+python -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
-# Configure environment
-cp .env.template .env
+cp .env.example .env            # then edit .env (see Configuration)
 ```
 
-### **2. Configuration (.env file)**
+## Configuration
+
+All configuration lives in `.env`. **`.env.example` is the canonical, fully
+documented list** — copy it and fill in what you need. The only hard requirement
+is one AI provider key:
+
 ```bash
-# Required: AI API Key (supports both Claude and Gemini)
-GEMINI_API_KEY=your_gemini_api_key     # Google AI Studio
-ANTHROPIC_API_KEY=your_claude_api_key  # Anthropic Console
-
-# Gemini model selection
-GEMINI_MODEL=gemini-2.5-flash          # Fast for pipeline testing (15 RPM)
-# GEMINI_MODEL=gemini-2.5-pro          # Better for trading (2 RPM, higher quality)
-
-# Optional: Live NSE data (otherwise uses realistic mock data)
-ZERODHA_API_KEY=your_zerodha_key        # From Kite Connect dashboard
-ZERODHA_API_SECRET=your_zerodha_secret  # From Kite Connect dashboard
-
-# Trading parameters (optional - good defaults provided)
-INITIAL_CAPITAL=10000
-MAX_RISK_PER_TRADE=0.015  # 1.5% risk per trade
+# Set at least ONE of these:
+GROQ_API_KEY=...        # console.groq.com   (fast, generous free tier)
+GEMINI_API_KEY=...      # aistudio.google.com
+ANTHROPIC_API_KEY=...   # console.anthropic.com
 ```
 
-### **3. Generate Zerodha Access Token (Optional - For Live Data)**
-If you want live NSE market data:
+Everything else has sensible defaults. The knobs you are most likely to touch:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ENABLED_AI_PROVIDERS` | `groq,gemini,claude` | Providers (and order) for the fallback chain. A provider is used only if listed **and** its key is set. |
+| `TRADING_STRATEGY` | `swing` | Symbol selection: `conservative`, `swing`, `diversified`, or `tech_focus`. |
+| `INITIAL_CAPITAL` | `10000.0` | Starting paper-trading capital (₹). |
+| `MAX_RISK_PER_TRADE` | `0.015` | Fraction of capital risked per trade (1.5%). |
+| `DRY_RUN` / `TRADING_MODE` | `true` / `paper` | Safety toggles. Paper trading is the default. |
+| `ZERODHA_API_KEY` *(+secret/token)* | — | Enable live NSE data. Without it, live cycles fall back to mock; backtests use the bundled dataset. |
+
+> See `.env.example` for the full set (AI models, indicator periods, emergency
+> thresholds, validation limits, etc.).
+
+### Live NSE data (optional)
+
+Zerodha access tokens expire daily. Generate one via the helper script, which
+walks the OAuth flow and writes the token back to `.env`:
 
 ```bash
-# Automated token generation (handles OAuth flow)
 python scripts/generate_zerodha_token.py
-
-# The script will:
-# 1. Open browser to Zerodha login
-# 2. Handle OAuth authentication
-# 3. Save token to your .env automatically
-# 4. Verify token works with test data fetch
 ```
 
-**📝 Note**: Zerodha tokens expire daily and need renewal. Re-run the script when you see "Unauthorized" errors.
+Re-run it whenever you see "Unauthorized" / "Token expired".
 
-### **4. Run Your First Trading Session**
+## Usage
+
+All apps are run from the repo root.
+
 ```bash
-# Quick system check
-python apps/health_check.py
+# System diagnostics
+python apps/health_check.py            # full check
+python apps/health_check.py --quick    # fast subset
 
-# Start paper trading (safe simulation)
+# Run one AI-driven trading cycle (paper / test mode) and print a report
 python apps/trader.py
 
-# Or run backtesting to see historical performance
-python apps/backtest.py
+# Backtest against historical data
+python apps/backtest.py --auto                          # defaults (3 days)
+python apps/backtest.py --days 30 --speed 10
+python apps/backtest.py --start-date 2025-09-01 --end-date 2025-09-30
+python apps/backtest.py --symbols TCS INFY HDFCBANK
+
+# Collect / refresh market data
+python apps/data_collector.py --period 6mo
+python apps/data_collector.py --days 30 --symbols RELIANCE TCS
+
+# Monitor performance
+python apps/monitor.py                  # one-shot snapshot
+python apps/monitor.py --continuous     # refresh every 30s
+python apps/monitor.py --auto --export  # automated + export report
 ```
 
----
+> **Note:** `apps/trader.py` currently runs a *single* trading cycle in
+> paper/test mode and prints a performance report — it is a demonstration entry
+> point, not a long-running daemon.
 
-## 📱 Applications
-
-| **Application** | **Purpose** | **Command** |
-|-----------------|-------------|-------------|
-| **`trader.py`** | Main trading system | `python apps/trader.py` |
-| **`backtest.py`** | Historical simulation | `python apps/backtest.py` |
-| **`data_collector.py`** | Data management | `python apps/data_collector.py` |
-| **`monitor.py`** | System monitoring | `python apps/monitor.py` |
-| **`health_check.py`** | System validation | `python apps/health_check.py` |
-
-### **Daily Usage Examples**
-```bash
-# Morning: Check system health and update data
-python apps/health_check.py && python apps/data_collector.py
-
-# Start trading in alert mode (recommended - more efficient)
-python apps/trader.py --mode alert
-
-# Monitor performance in another terminal
-python apps/monitor.py --continuous
-```
-
----
-
-## 🚨 Critical Safety Features
-
-**This system includes comprehensive safeguards to prevent financial losses:**
-
-🛡️ **Mock Data Protection**: Automatically prevents fake data in live trading mode
-🔐 **Live Trading Confirmation**: Requires explicit user confirmation for real money trading
-📡 **Data Source Validation**: Only authenticated live data sources allowed in live mode
-⚠️ **API Failure Protection**: Prevents trading if no live data APIs are available
-
-**⚠️ IMPORTANT**: Always start with paper trading mode to test the system safely.
-
-```bash
-# Safe: Paper trading (default - no real money risk)
-python apps/trader.py
-
-# ⚠️  Real Money: Requires explicit confirmation
-TRADING_MODE=live python apps/trader.py
-```
-
----
-
-## 🧠 How The AI Trading Works
-
-### **1. Market Analysis**
-- **Real-time data**: Collects OHLCV data from NSE stocks
-- **Technical indicators**: Calculates RSI, MACD, SMA automatically
-- **Market context**: Builds comprehensive market analysis prompts
-
-### **2. AI Decision Making**
-- **Intelligent analysis**: Claude AI or Gemini analyzes market conditions (configurable)
-- **Confidence scoring**: Each decision includes confidence level (0-100%)
-- **Detailed reasoning**: AI explains why it made each decision
-- **Risk awareness**: Considers portfolio and risk factors
-
-### **3. Risk Management**
-- **Position sizing**: Kelly Criterion-inspired calculations
-- **Stop losses**: Automatic stop loss (configurable)
-- **Portfolio limits**: Max position per stock and sector
-- **Risk per trade**: Maximum 1.5% capital risk per trade
-
-### **4. Trade Execution**
-- **Realistic simulation**: Includes slippage and commissions
-- **Performance tracking**: Real-time P&L, win rates, Sharpe ratio
-- **Position management**: Automatic stop loss and take profit execution
-
----
-
-## ⚡ Event-Driven Alert System
-
-Instead of checking markets every 5 minutes, the alert system monitors continuously but only triggers AI analysis when significant events occur.
-
-### **Alert Types**
-- **📈 Price Alerts**: Significant price movements
-- **📊 RSI Extremes**: Overbought (>70) or oversold (<30)
-- **📈 Volume Spikes**: 2x+ normal volume activity
-- **🔄 MACD Crossovers**: Bullish/bearish signal crossovers
-
-### **Efficiency Gains**
-- **80% fewer API calls**: Only analyze when markets move significantly
-- **Cost reduction**: Significant reduction in API costs
-- **Faster response**: <1 minute from alert to action
-- **Better decisions**: Focus on meaningful market events only
-
-```bash
-# Enable alert mode (recommended)
-python apps/trader.py --mode alert
-```
-
----
-
-## 🏗️ System Architecture
+## Project structure
 
 ```
-📱 Applications Layer     → apps/          (Trading, Backtesting, Monitoring)
-🧠 Business Logic Layer  → src/core/      (AI, Risk, Trading, Analysis)
-📊 Data Layer           → src/data/       (APIs, Database, Configuration)
-⚡ Alert System         → src/alerts/     (Event Detection, Rules, Monitoring)
-🤖 AI Components        → src/ai/         (Prompt Engineering)
-📈 Monitoring          → src/monitoring/ (Performance, Error Tracking)
-🔧 Utilities           → src/utils/      (Logging, Database Optimization)
-🧪 Testing Suite       → tests/          (Automated tests)
+apps/            CLI entry points (trader, backtest, data_collector, monitor, health_check)
+src/core/        AI brain, risk manager, paper trader, indicators, trading modes
+src/data/        config, data sources, database, stock registry, validation, cache
+src/ai/          provider coordinator, prompt builder, provider clients (claude/gemini/groq)
+src/alerts/      event-driven alert engine and rules
+src/monitoring/  performance tracking and dashboard
+src/utils/       logging, database optimization
+scripts/         operational helpers (e.g. Zerodha token generation)
+docs/            user docs; docs/dev/ holds internal notes & research
+data/            runtime data — logs, caches, DBs (gitignored)
 ```
 
----
+## Supported stocks & strategies
 
-## 💰 Supported Stocks
+The registry (`src/data/stock_registry.py`) covers **27 NSE stocks across 9
+sectors** (Technology, Banking, Energy, FMCG, Pharma, Telecom, Metals, Auto,
+Infrastructure), each tagged with market cap and liquidity. `TRADING_STRATEGY`
+selects a subset:
 
-### **20 NSE Stocks Across 8 Sectors**
-- **Banking**: HDFC Bank, ICICI Bank, State Bank, Axis Bank, Kotak Bank, IndusInd
-- **Technology**: TCS, Infosys, Wipro, HCL Tech
-- **Energy**: Reliance Industries, ONGC, BPCL
-- **Automobile**: Maruti Suzuki, Tata Motors, Bajaj Auto
-- **FMCG**: Hindustan Unilever, ITC
-- **Pharma**: Sun Pharma, Dr Reddy's
-- **Telecom**: Bharti Airtel
-- **Metals**: Tata Steel
+- **conservative** — large-cap, high-liquidity names
+- **swing** — medium-volatility swing candidates *(default)*
+- **diversified** — spread across sectors
+- **tech_focus** — technology + banking tilt
 
-### **Portfolio Strategies**
-- **Conservative**: Large-cap, high-liquidity stocks
-- **Swing Trading**: Medium volatility stocks
-- **Diversified**: Cross-sector spread
-- **Tech Focused**: Technology and growth stocks
+The Nifty 50 index (`^NSEI`) is always included for market-regime context.
 
----
+## Safety features
 
-## 🧪 Testing & Quality
+- **Paper trading by default** — no real orders unless you deliberately enable
+  live mode.
+- **Mock-data lockout** — simulated data can never be used in live trading.
+- **Real-data requirement for live trading** — live mode requires an
+  authenticated data source.
+- **Risk guards** — per-trade risk, daily loss, and max-drawdown limits, plus a
+  >20% price-move circuit breaker on incoming data.
 
-### **Test Suite**
-```bash
-# Run complete test suite
-python run_tests.py
+## Troubleshooting
 
-# Run with coverage report
-python run_tests.py --coverage
+| Problem | Fix |
+|---|---|
+| `Please set at least one AI API key...` | Add `GROQ_API_KEY`, `GEMINI_API_KEY`, or `ANTHROPIC_API_KEY` to `.env`. |
+| "Unauthorized" / "Token expired" | Re-run `python scripts/generate_zerodha_token.py` (Zerodha tokens expire daily). |
+| No live data | Without a valid Zerodha token, live cycles fall back to mock data; use `apps/backtest.py` against the bundled dataset instead. |
+| General health | Run `python apps/health_check.py` for a full diagnosis. |
 
-# Quick essential tests only
-python run_tests.py --quick
-```
+Logs are written under `data/logs/`.
 
----
+## Project status & limitations
 
-## 🔧 Advanced Configuration
+- **Research / paper-trading focus.** Live-trading code paths exist but are gated
+  and lightly exercised — treat live use as experimental and at your own risk.
+- **No automated test suite ships yet.** `pytest` is listed as a dev dependency;
+  contributions adding tests are welcome.
+- **Bundled market data.** A historical OHLCV snapshot ships as a SQLite file so
+  backtesting works offline; it is public market data, not secrets.
 
-### **Trading Parameters**
-```bash
-# Risk Management
-MAX_RISK_PER_TRADE=0.015     # 1.5% max risk per trade
-STOP_LOSS_PERCENT=0.05       # 5% stop loss
-TAKE_PROFIT_PERCENT=0.08     # 8% take profit
+## Documentation
 
-# Position Limits
-MAX_POSITIONS=8              # Max open positions
-MAX_POSITION_SIZE=0.25       # 25% max per stock
+- [`docs/SYSTEM_FLOW.md`](./docs/SYSTEM_FLOW.md) — system flow and architecture
+- [`docs/ALERT_BASED_TRADING_SYSTEM.md`](./docs/ALERT_BASED_TRADING_SYSTEM.md) — alert system details
+- [`docs/api/`](./docs/api/) — per-module API notes
+- [`docs/dev/`](./docs/dev/) — internal development notes & research (not needed for normal use)
 
-# Technical Indicators
-RSI_PERIOD=14               # RSI calculation period
-RSI_OVERBOUGHT=70          # RSI overbought threshold
-RSI_OVERSOLD=30            # RSI oversold threshold
-```
+## License
 
-### **Alert System Tuning**
-```bash
-# Alert Sensitivity
-PRICE_ALERT_THRESHOLD=0.02   # 2% price movement
-VOLUME_SPIKE_MULTIPLIER=2.0  # 2x volume for spike
-ALERT_COOLDOWN_MINUTES=30    # Prevent alert spam
+Released under the [MIT License](./LICENSE).
 
-# System Performance
-CACHE_TTL_SECONDS=300        # 5-minute data cache
-DB_OPTIMIZATION_ENABLED=true # Auto database optimization
-```
+## Disclaimer
+
+This software is provided for **educational and research purposes only**. It is a
+paper-trading / simulation system and is **not investment advice**. Trading
+financial instruments carries substantial risk of loss. Nothing here is a
+recommendation to buy or sell any security. You are solely responsible for any
+use of this code, including any configuration for live trading. The authors
+accept **no liability** for any financial losses or damages — see the
+[LICENSE](./LICENSE) ("AS IS", no warranty).
 
 ---
 
-## 📚 Documentation
-
-### **Technical Documentation**
-- **[docs/SYSTEM_FLOW.md](./docs/SYSTEM_FLOW.md)** - System flow and architecture
-- **[docs/ALERT_BASED_TRADING_SYSTEM.md](./docs/ALERT_BASED_TRADING_SYSTEM.md)** - Alert system details
-- **[docs/api/](./docs/api/)** - API documentation for all modules
-- **[docs/research/](./docs/research/)** - Research and reference materials
-
-### **System Analysis**
-- **[COMPREHENSIVE_CLAIMS_TO_VERIFY.md](./COMPREHENSIVE_CLAIMS_TO_VERIFY.md)** - System testing and verification results
-- **[system_analysis/reports/ai_position_enforcement_proposal.md](./system_analysis/reports/ai_position_enforcement_proposal.md)** - Feature proposals
-
----
-
-## 🚨 Troubleshooting
-
-### **Common Issues**
-| **Problem** | **Solution** | **Details** |
-|-------------|-------------|-------------|
-| **"No API key"** | Add `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` to `.env` | Get from anthropic.com or Google AI Studio |
-| **"Unauthorized" / "Token expired"** | Run `python scripts/generate_zerodha_token.py` | Zerodha tokens expire daily |
-| **"No trading signals"** | Check internet connection | System needs AI API access |
-| **"Tests failing"** | Run `python apps/health_check.py` | Comprehensive system diagnosis |
-| **"Poor performance"** | Enable alert mode | `python apps/trader.py --mode alert` |
-| **"Data collection errors"** | Use mock data fallback | System works without live data APIs |
-
-### **Getting Help**
-```bash
-# System health check
-python apps/health_check.py
-
-# View system status
-python apps/monitor.py
-
-# Check logs
-tail -f data/logs/claude_trader.log
-```
-
----
-
-## 🔒 Security & Compliance
-
-- **Environment-based secrets**: All API keys in `.env` file (never committed)
-- **No hardcoded credentials**: Zero secrets in source code
-- **Comprehensive error handling**: Graceful failure management
-- **Automatic fallbacks**: System continues operating during failures
-- **Data validation**: Multi-level data quality and integrity checks
-- **Trading mode safety**: Prevents accidental live trading with test data
-
----
-
-## 📞 Support
-
-### **Getting Started Issues**
-1. **Check**: `python apps/health_check.py`
-2. **Verify**: `.env` file has `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`
-3. **Test**: `python apps/trader.py --cycles 1`
-4. **Monitor**: `python apps/monitor.py`
-
-### **System Requirements**
-- Python 3.8+
-- 100MB+ free disk space
-- Internet connection for API access
-- (Optional) Zerodha Kite Connect account for live data
-
----
-
-**Built with Claude AI / Gemini for intelligent market analysis**
+*Built with Groq, Gemini, and Claude for market analysis.*

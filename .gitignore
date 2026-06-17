@@ -15,9 +15,11 @@ build/
 .env.local
 .env.*.local
 
-# Data files (contains sensitive trading data)
-data/
-!data/.gitkeep
+# Runtime data dir at repo root (logs, caches, runtime DBs).
+# Anchored with a leading slash so it does NOT also match the source
+# package src/data/.
+/data/
+!/data/.gitkeep
 
 # Logs
 *.log
@@ -53,5 +55,17 @@ __pycache__/
 backtest_results/
 live_trades/
 
+# Published market dataset (historical OHLCV used by the backtester).
+# Exception to the *.sqlite rule above; this is public market data, not secrets.
+!src/data/market_data.sqlite
+
 instruments.csv
+
+# Tooling / editor cruft (not part of the published project)
+.claudesync/
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+trading-tiding/
+graphify-out/
 
