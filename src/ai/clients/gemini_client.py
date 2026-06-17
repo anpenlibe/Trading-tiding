@@ -1,5 +1,6 @@
 """Gemini API client implementation using REST API."""
 
+import re
 from typing import Optional
 import requests
 from src.ai.clients.base_client import BaseAIClient
@@ -67,16 +68,16 @@ class GeminiClient(BaseAIClient):
             }
         }
 
+        # Pass the API key via header, NOT the URL query string, so it can never
+        # leak into logged URLs or exception messages (requests includes the full
+        # URL — query string and all — in HTTPError text).
         headers = {
-            "Content-Type": "application/json"
-        }
-
-        params = {
-            "key": self.api_key
+            "Content-Type": "application/json",
+            "x-goog-api-key": self.api_key,
         }
 
         try:
-            response = requests.post(url, json=payload, headers=headers, params=params, timeout=90)
+            response = requests.post(url, json=payload, headers=headers, timeout=90)
             response.raise_for_status()
 
             result = response.json()
@@ -101,7 +102,12 @@ class GeminiClient(BaseAIClient):
                 raise Exception(f"No valid candidates in response: {result}")
 
         except requests.exceptions.RequestException as e:
-            raise Exception(f"Gemini REST API error: {e}")
+            # Defense in depth: even though the key now travels in a header,
+            # scrub anything key-shaped before the message reaches a logger.
+            msg = re.sub(r"key=[\w.\-]+", "key=***", str(e))
+            if self.api_key:
+                msg = msg.replace(self.api_key, "***")
+            raise Exception(f"Gemini REST API error: {msg}")
         except (KeyError, IndexError) as e:
             raise Exception(f"Failed to parse Gemini response: {e}")
 
