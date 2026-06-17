@@ -18,6 +18,7 @@ from src.ai.clients.claude_client import ClaudeClient
 from src.ai.clients.gemini_client import GeminiClient
 from src.ai.clients.groq_client import GroqClient
 from src.utils.logger import setup_logger
+from src.exceptions import AIAnalysisError
 
 logger = setup_logger(__name__, 'provider_coordinator.log')
 
@@ -89,9 +90,18 @@ class ProviderCoordinator:
         """
         chain = []
 
+        # Provider allowlist: a provider is added only if its API key is present
+        # AND it appears in ENABLED_AI_PROVIDERS (comma-separated, default all).
+        # e.g. set ENABLED_AI_PROVIDERS=groq,gemini to disable Claude.
+        enabled = {
+            p.strip().lower()
+            for p in os.getenv("ENABLED_AI_PROVIDERS", "groq,gemini,claude").split(",")
+            if p.strip()
+        }
+
         # Groq models (each has independent rate limits per model)
         groq_key = os.getenv("GROQ_API_KEY")
-        if groq_key:
+        if groq_key and "groq" in enabled:
             # Primary: gpt-oss-120b - best quality, native JSON, 8K TPM / 200K TPD
             chain.append(ProviderConfig(
                 provider="groq",
@@ -121,7 +131,7 @@ class ProviderCoordinator:
 
         # Gemini Pro (reliable but slower)
         gemini_key = os.getenv("GEMINI_API_KEY")
-        if gemini_key:
+        if gemini_key and "gemini" in enabled:
             chain.append(ProviderConfig(
                 provider="gemini",
                 model="gemini-2.5-pro",
@@ -131,7 +141,7 @@ class ProviderCoordinator:
 
         # Claude (premium option if configured)
         claude_key = os.getenv("ANTHROPIC_API_KEY")
-        if claude_key:
+        if claude_key and "claude" in enabled:
             chain.append(ProviderConfig(
                 provider="claude",
                 model=os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
@@ -322,24 +332,11 @@ class ProviderCoordinator:
                 # Try next provider in chain
                 continue
 
-        # All providers failed - return rule-based response
-        logger.warning("All AI providers exhausted, using rule-based fallback")
-        return self._rule_based_fallback(prompt)
-
-    def _rule_based_fallback(self, prompt: str) -> str:
-        """Generate rule-based response when all providers fail.
-
-        Args:
-            prompt: The original prompt
-
-        Returns:
-            str: Conservative rule-based analysis
-        """
-        logger.info("Generating rule-based fallback response")
-
-        # This is a placeholder - actual implementation should parse prompt
-        # and return appropriate rule-based response
-        return "NEUTRAL (rule-based fallback - all AI providers unavailable)"
+        # All providers exhausted (rate-limited or errored). Raise so the caller
+        # (AIBrain) applies its schema-aware rule-based fallback — the coordinator
+        # cannot know whether a single-symbol or portfolio JSON shape is expected.
+        logger.warning("All AI providers exhausted; raising for caller's rule-based fallback")
+        raise AIAnalysisError("All AI providers unavailable (rate-limited or failed)")
 
     def get_current_provider(self) -> Optional[str]:
         """Get name of currently active provider.

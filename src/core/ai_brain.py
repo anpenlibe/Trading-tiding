@@ -10,16 +10,14 @@ import time
 from typing import Dict, Any, Optional, List
 import pandas as pd
 import json
-from dataclasses import asdict
 
-from src.interfaces import BaseDecisionModel, TradingSignal, MarketData
+from src.interfaces import BaseDecisionModel, MarketData
 from src.ai.prompt_builder import PromptBuilder
 from src.ai.provider_coordinator import ProviderCoordinator
 from src.core.risk_manager import SimpleRiskManager
 from src.data.config import INITIAL_CAPITAL, MAX_DECISION_HISTORY
 from src.utils.logger import setup_logger
-from src.utils.retry import retry_with_backoff
-from src.exceptions import AIAnalysisError, ConfigurationError
+from src.exceptions import AIAnalysisError
 from src.monitoring.performance import performance_tracker
 
 logger = setup_logger(__name__, 'ai_brain.log')
@@ -119,10 +117,12 @@ class AIBrain(BaseDecisionModel):
             try:
                 response_text = self._get_ai_response(prompt)
             except Exception as e:
-                # TODO: Rule-based fallback disabled - for testing only
-                # return self._fallback_analysis(latest_data, indicators)
+                # AI provider failed for this call: degrade gracefully to the
+                # rule-based fallback, but still record the failure so the
+                # circuit breaker (max_consecutive_failures) can escalate.
                 self.consecutive_failures += 1
-                raise AIAnalysisError(f"AI analysis failed: {e}")
+                logger.warning(f"AI response failed, using rule-based fallback: {e}")
+                return self._fallback_analysis(latest_data, indicators)
 
             # Parse response
             try:
@@ -475,12 +475,17 @@ class AIBrain(BaseDecisionModel):
                     close=float(data['close'].iloc[-1]),
                     volume=float(data['volume'].iloc[-1])
                 )
-                # TODO: Rule-based fallback disabled - for testing only
-                # decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
-                raise Exception(f"Failed to analyze {symbol}")
+                decisions[symbol] = self._fallback_analysis(
+                    market_data_obj, portfolio_indicators[symbol]
+                )
 
-        # This method should not be reached with fallbacks disabled
-        raise Exception("Portfolio analysis failed - all AI methods exhausted")
+        # Return the wrapped shape every caller expects ({'decisions': ...}),
+        # not a bare {symbol: decision} map.
+        return {
+            'market_analysis': 'Rule-based fallback (all AI providers unavailable)',
+            'decisions': decisions,
+            'symbols_analyzed': len(decisions),
+        }
 
     def _intelligent_fallback_analysis(self, portfolio_data: Dict[str, pd.DataFrame],
                                      portfolio_indicators: Dict[str, Dict[str, float]],
@@ -517,10 +522,11 @@ class AIBrain(BaseDecisionModel):
                             critical_symbols_analyzed += 1
                             logger.debug(f"Individual AI analysis successful for owned position: {symbol}")
                         except Exception as individual_error:
-                            logger.debug(f"AI analysis failed for {symbol}: {individual_error}")
-                            # TODO: Rule-based fallback disabled - for testing only
-                            # decisions[symbol] = self._fallback_analysis(market_data_obj, portfolio_indicators[symbol])
-                            raise Exception(f"AI analysis failed for {symbol}: {individual_error}")
+                            logger.debug(f"AI analysis failed for {symbol}, using rule-based fallback: {individual_error}")
+                            decisions[symbol] = self._fallback_analysis(
+                                market_data_obj, portfolio_indicators[symbol]
+                            )
+                            critical_symbols_analyzed += 1
 
                     except Exception as symbol_error:
                         logger.error(f"Complete analysis failure for owned position {symbol}: {symbol_error}")
