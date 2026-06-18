@@ -45,6 +45,28 @@ class TestValidateTrade:
         assert is_valid is False
         assert 'capital' in reason.lower()
 
+    def test_overpriced_stock_rejected_with_honest_reason(self, risk_manager):
+        """A share priced above the per-position cap must be skipped with an
+        honest 'exceeds max position' reason — NOT the misleading
+        '₹0.00 below minimum' message, which blamed capital instead of the
+        stock's price (position sizing returns 0 shares for it)."""
+        # ₹4,000 share vs 20% of ₹10,000 = ₹2,000 cap → unaffordable within cap
+        signal = {'symbol': 'LT', 'signal': 'BUY', 'entry_price': 4000.0,
+                  'available_capital': 10000.0}
+        is_valid, reason = risk_manager.validate_trade(signal, {})
+        assert is_valid is False
+        assert 'exceeds max position' in reason.lower()
+        assert '0.00 below minimum' not in reason
+
+    def test_overpriced_stock_tradeable_at_larger_capital(self, risk_manager):
+        """The capital-adaptive flip side: the SAME expensive stock becomes
+        tradeable once capital is large enough that one share fits within the
+        cap. The cap is fixed; the tradeable universe adapts to capital."""
+        signal = {'symbol': 'LT', 'signal': 'BUY', 'entry_price': 4000.0,
+                  'available_capital': 100000.0}  # 20% = ₹20,000 > ₹4,000
+        is_valid, _ = risk_manager.validate_trade(signal, {})
+        assert is_valid is True
+
 
 class TestPositionSizing:
     def test_position_respects_capital_cap(self, risk_manager):

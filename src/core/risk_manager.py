@@ -277,7 +277,22 @@ class SimpleRiskManager(BaseRiskManager):
         # Check minimum capital
         if available_capital < MIN_TRADE_VALUE:
             return False, f"Insufficient capital: ₹{available_capital:.2f} < ₹{MIN_TRADE_VALUE}"
-        
+
+        # Capital-adaptive affordability gate: a single share priced above the
+        # per-position cap (capital × MAX_POSITION_SIZE) can't be held within risk
+        # limits at this capital, so position sizing returns 0 shares. Report that
+        # honestly and short-circuit BEFORE sizing — otherwise it falls through to
+        # the generic "trade value ₹0.00 below minimum" message below, which blames
+        # capital rather than the stock's price. This is how the tradeable universe
+        # adapts to capital: the cap is fixed, expensive names drop out when capital
+        # is small and reappear as it grows.
+        max_position_value = available_capital * MAX_POSITION_SIZE
+        if entry_price > max_position_value:
+            return False, (
+                f"{symbol} @ ₹{entry_price:,.0f} exceeds max position "
+                f"₹{max_position_value:,.0f} ({MAX_POSITION_SIZE*100:.0f}% of ₹{available_capital:,.0f})"
+            )
+
         # Calculate risk parameters
         risk_params = self.calculate_risk_parameters(
             symbol=symbol,
