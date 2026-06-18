@@ -140,31 +140,15 @@ REPO_ROOT         = os.path.dirname(BASE_PATH)
 RUNTIME_DATA_PATH = os.path.join(REPO_ROOT, "data")
 DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")  # data/ (gitignored, runtime)
 
-# ============= AI API SETTINGS =============
-# Multi-Provider Fallback Architecture (2025-10-03 Refactor):
-# - ProviderCoordinator handles automatic fallback between providers
-# - Default chain: Groq llama-3.3 → Groq llama-3.1 → Gemini Pro → Claude → rule-based
-# - Per-model rate limiting allows multi-model Groq usage (separate rate pools)
-# - AI_PROVIDER setting is deprecated but kept for backward compatibility
-AI_PROVIDER        = os.getenv("AI_PROVIDER", "groq")  # Deprecated: Coordinator now manages providers
-
-# Claude API Settings
-CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
-CLAUDE_MAX_TOKENS  = int(os.getenv("CLAUDE_MAX_TOKENS", "1000"))
-CLAUDE_TEMPERATURE = float(os.getenv("CLAUDE_TEMPERATURE", "0.3"))
-
-# Gemini API Settings
-GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # Fast for pipeline testing
-GEMINI_MAX_TOKENS  = int(os.getenv("GEMINI_MAX_TOKENS", "4000"))
-GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.6"))
-# Note: Coordinator uses gemini-2.5-pro in fallback chain (better quality, 2 RPM limit)
-
-# Groq API Settings (Multi-Model Support)
-GROQ_MODEL         = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")  # Primary model
-GROQ_MAX_TOKENS    = int(os.getenv("GROQ_MAX_TOKENS", "8000"))
-GROQ_TEMPERATURE   = float(os.getenv("GROQ_TEMPERATURE", "0.6"))
-# Available models: llama-3.3-70b-versatile, llama-3.1-70b-versatile, mixtral-8x7b-32768
-# Note: Coordinator uses both llama-3.3 and llama-3.1 with separate rate limit pools
+# ============= AI PROVIDER SETTINGS =============
+# The AI provider fallback chain lives in src/ai/provider_coordinator.py, which
+# owns its config via env (it reads ENABLED_AI_PROVIDERS, the *_API_KEY vars, and
+# CLAUDE_MODEL / CLAUDE_MAX_TOKENS directly). The Groq and Gemini models are FIXED
+# in the coordinator's chain — there are no GROQ_MODEL / GEMINI_MODEL knobs.
+#
+# Removed from here: AI_PROVIDER and the per-provider model/token/temperature
+# constants. They were never imported by the coordinator (which re-reads env), so
+# setting them did nothing — no-op traps rather than real configuration.
 
 # Risk Management
 STOP_LOSS_PERCENT     = float(os.getenv("STOP_LOSS_PERCENT", "0.015"))

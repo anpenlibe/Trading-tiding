@@ -162,16 +162,17 @@ ANTHROPIC_API_KEY=your-anthropic-key  # Optional
 
 Configuration (optional overrides):
 ```bash
-# Model selection (coordinator uses multiple models)
-GROQ_MODEL=llama-3.3-70b-versatile
-GEMINI_MODEL=gemini-2.5-flash
-CLAUDE_MODEL=claude-3-5-sonnet-20241022
+# Provider allowlist — a provider is used only if listed AND its key is set
+ENABLED_AI_PROVIDERS=groq,gemini,claude
 
-# Temperature (applied to all providers)
-GROQ_TEMPERATURE=0.6
-GEMINI_TEMPERATURE=0.6
-CLAUDE_TEMPERATURE=0.3
+# Claude model / token overrides — the ONLY per-provider knobs read at runtime.
+CLAUDE_MODEL=claude-3-5-sonnet-20241022
+CLAUDE_MAX_TOKENS=8000
 ```
+
+The Groq and Gemini models are **fixed** in the coordinator's fallback chain
+(`_get_default_fallback_chain`) — there are no `GROQ_MODEL` / `GEMINI_MODEL`
+env knobs — and temperature is set in code (`AIBrain(temperature=...)`).
 
 ## Rate Limit Handling
 

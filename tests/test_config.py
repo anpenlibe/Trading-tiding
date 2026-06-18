@@ -43,6 +43,19 @@ def test_vestigial_config_removed():
         assert not hasattr(c, name), f"{name} was vestigial and should stay removed"
 
 
+def test_dead_ai_knobs_removed():
+    """Pins the AI-pass removal: AI_PROVIDER + the per-provider model/token/
+    temperature constants were no-op traps — the coordinator never imported
+    them (it re-reads env and hardcodes the Groq/Gemini chain), so they lied
+    about controlling behaviour. They must stay gone from config."""
+    from src.data import config as c
+    for name in ('AI_PROVIDER', 'CLAUDE_MODEL', 'CLAUDE_MAX_TOKENS',
+                 'CLAUDE_TEMPERATURE', 'GEMINI_MODEL', 'GEMINI_MAX_TOKENS',
+                 'GEMINI_TEMPERATURE', 'GROQ_MODEL', 'GROQ_MAX_TOKENS',
+                 'GROQ_TEMPERATURE'):
+        assert not hasattr(c, name), f"{name} was an unread no-op trap; keep it removed"
+
+
 def test_core_config_surface_intact():
     """The documented config surface must remain importable."""
     from src.data import config as c
