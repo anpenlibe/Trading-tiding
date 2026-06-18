@@ -1,7 +1,6 @@
 """Database optimization utilities."""
 
 import sqlite3
-import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 from src.data.config import DB_PATH
@@ -35,8 +34,8 @@ class DatabaseOptimizer:
             try:
                 count = self.conn.execute(f"SELECT COUNT(*) as cnt FROM {table}").fetchone()['cnt']
                 metrics['tables'][table] = count
-            except:
-                metrics['tables'][table] = 0
+            except sqlite3.Error:
+                metrics['tables'][table] = 0  # table absent in this DB
         
         # Index usage
         metrics['indexes'] = []
@@ -105,34 +104,30 @@ class DatabaseOptimizer:
         return result
     
     def cleanup_old_data(self, days_to_keep: int = 90) -> int:
-        """Remove old data beyond retention period."""
-        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        
-        # Count records to delete
-        cur = self.conn.execute(
-            "SELECT COUNT(*) as cnt FROM price_data WHERE timestamp < ?",
-            (cutoff_date,)
-        )
-        records_to_delete = cur.fetchone()['cnt']
-        
+        """Remove data older than the retention window from the time-series tables.
+
+        Returns the number of price_data rows removed.
+        """
+        # Compare against an explicit 'YYYY-MM-DD HH:MM:SS' string (matches the
+        # stored format). Passing a datetime relied on sqlite3's default adapter,
+        # deprecated in 3.12 and removed in later versions.
+        cutoff = (datetime.now() - timedelta(days=days_to_keep)).strftime('%Y-%m-%d %H:%M:%S')
+
+        records_to_delete = self.conn.execute(
+            "SELECT COUNT(*) as cnt FROM price_data WHERE timestamp < ?", (cutoff,)
+        ).fetchone()['cnt']
+
         if records_to_delete > 0:
-            # Delete old price data
-            self.conn.execute("DELETE FROM price_data WHERE timestamp < ?", (cutoff_date,))
-            
-            # Delete old indicators
-            self.conn.execute("DELETE FROM indicators WHERE timestamp < ?", (cutoff_date,))
-            
-            # Delete old quality logs
-            self.conn.execute("DELETE FROM data_quality_log WHERE timestamp < ?", (cutoff_date,))
-            
+            for table in ('price_data', 'indicators', 'data_quality_log'):
+                self.conn.execute(f"DELETE FROM {table} WHERE timestamp < ?", (cutoff,))
             self.conn.commit()
             logger.info(f"Cleaned up {records_to_delete} old records")
-        
+
         return records_to_delete
     
     def optimize_settings(self):
-        """Apply optimal SQLite settings."""
-        optimizations = [
+        """Apply optimal SQLite pragmas (WAL, cache, mmap, ...)."""
+        pragmas = [
             "PRAGMA journal_mode = WAL",  # Write-Ahead Logging
             "PRAGMA synchronous = NORMAL",  # Balance safety/speed
             "PRAGMA cache_size = -64000",  # 64MB cache
@@ -140,8 +135,8 @@ class DatabaseOptimizer:
             "PRAGMA mmap_size = 268435456",  # 256MB memory-mapped I/O
             "PRAGMA optimize"  # Run optimization
         ]
-        
-        for pragma in optimizations:
+
+        for pragma in pragmas:
             self.conn.execute(pragma)
             logger.info(f"Applied: {pragma}")
     
