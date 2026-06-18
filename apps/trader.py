@@ -1,31 +1,23 @@
-"""
-Module: claude_trader.py
-Purpose: Main Claude-driven trading system orchestrator
-Author: Trading Bot Developer
-Created: 2025-06-30
-Modified: 2025-06-30
+"""Top-level trading orchestrator.
 
-This module integrates all components into a cohesive Claude-driven trading system:
-- AI Brain (Claude) for trading decisions
-- Risk Manager for position sizing and safety
-- Paper Trader for execution and tracking
-- Data Collector for market data and indicators
+``TradingOrchestrator`` wires the pipeline components into trading cycles:
+- AIBrain (multi-provider) for decisions
+- SimpleRiskManager for position sizing and validation
+- PaperTrader for simulated execution and tracking
+- DataCollector for market data and indicators
 
-Features:
-- Automated trading cycles
-- Real-time position management
-- Performance tracking and reporting
-- Risk management integration
-- Error handling and logging
+Run modes: ``run_trading_cycle`` (one pass over all symbols),
+``run_continuous_trading`` (daemon with backoff + market-hours gating), and
+``run_alert_mode`` (event-driven). ``main()`` runs a single cycle in test mode
+as a quick smoke check — it is not the long-running entry point.
 """
 
 import os
 import sys
 import time
 import json
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
-from dataclasses import asdict
+from datetime import datetime
+from typing import Dict, Any, Optional
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -42,21 +34,20 @@ from src.alerts.alert_engine import AlertEngine, AlertType
 from src.alerts.rules import PriceCrossRule, RSIExtremeRule, VolumeSpikRule, MACDCrossRule
 
 # Initialize logger
-logger = setup_logger(__name__, 'claude_trader.log')
+logger = setup_logger(__name__, 'trading_orchestrator.log')
 
 
-class ClaudeTrader:
+class TradingOrchestrator:
+    """Top-level orchestrator: turns market data into validated, executed trades.
+
+    Coordinates the AI brain, risk manager, paper trader, and data collector to
+    analyze markets, size/validate trades against risk rules, and simulate fills.
     """
-    Main Claude-driven trading system.
-    
-    Orchestrates all components to create an AI-powered trading bot
-    that can analyze markets, manage risk, and execute trades.
-    """
-    
+
     def __init__(self, initial_capital: float = INITIAL_CAPITAL, test_mode: bool = False):
         """
-        Initialize the Claude trading system.
-        
+        Initialize the trading orchestrator.
+
         Args:
             initial_capital: Starting capital for trading
             test_mode: If True, uses mock data and additional logging
@@ -65,7 +56,7 @@ class ClaudeTrader:
         self.test_mode = test_mode
         self.start_time = datetime.now()
         
-        logger.info(f"Initializing Claude Trader with ₹{initial_capital} capital")
+        logger.info(f"Initializing Trading Orchestrator with ₹{initial_capital} capital")
         logger.info(f"Test mode: {test_mode}")
         
         # Initialize components
@@ -101,7 +92,7 @@ class ClaudeTrader:
         # Decision history for analysis
         self.decision_history = []
         
-        logger.info("Claude Trader initialization complete")
+        logger.info("Trading Orchestrator initialization complete")
     
     def _setup_alerts(self):
         """Configure alert rules."""
@@ -263,7 +254,7 @@ class ClaudeTrader:
         Process:
         1. Collect market data for all symbols
         2. Calculate technical indicators  
-        3. Get Claude's analysis for each symbol
+        3. Get the AI analysis for each symbol
         4. Execute trades based on AI decisions
         5. Update positions and track performance
         
@@ -366,13 +357,19 @@ class ClaudeTrader:
             
             # Compute indicators
             indicators = calculate_all_indicators(df)
-            
+
             # Add symbol for AI analysis
             df['symbol'] = symbol
-            
-            # Get AI analysis
-            return self.ai_brain.analyze(df, indicators)
-            
+
+            # Get AI analysis, then stamp the symbol onto the decision so it is
+            # self-describing — PaperTrader.execute_trade keys off signal['symbol']
+            # and analyze() does not include it, so without this a valid BUY would
+            # be rejected downstream as "Signal missing 'symbol'".
+            signal = self.ai_brain.analyze(df, indicators)
+            if signal is not None:
+                signal['symbol'] = symbol
+            return signal
+
         except Exception as e:
             logger.error(f"Failed to generate signal for {symbol}: {e}")
             return None
@@ -413,134 +410,7 @@ class ClaudeTrader:
         except Exception as e:
             logger.error(f"Failed to execute trade for {symbol}: {e}")
             return False
-    
-    def _get_market_data_and_indicators(self, symbol: str) -> tuple[Optional[Any], Optional[Dict]]:
-        """
-        Get market data and calculated indicators for a symbol.
-        
-        Args:
-            symbol: Stock symbol to analyze
-            
-        Returns:
-            Tuple of (market_data_df, indicators_dict)
-        """
-        try:
-            # Get recent historical data for analysis
-            market_data = self.data_collector.get_recent_data(symbol, periods=50)
-            
-            if market_data.empty:
-                logger.warning(f"No historical data available for {symbol}")
-                return None, None
-            
-            # Add symbol column for AI analysis
-            market_data['symbol'] = symbol
-            
-            # Calculate indicators
-            indicators = calculate_all_indicators(market_data)
-            
-            logger.debug(f"Retrieved data for {symbol}: {len(market_data)} periods, {len(indicators)} indicators")
-            
-            return market_data, indicators
-            
-        except Exception as e:
-            logger.error(f"Error getting market data for {symbol}: {e}")
-            return None, None
-    
-    def _get_claude_decision(self, symbol: str, market_data: Any, indicators: Dict[str, float]) -> Optional[Dict[str, Any]]:
-        """
-        Get trading decision from Claude AI.
-        
-        Args:
-            symbol: Stock symbol
-            market_data: Historical price data
-            indicators: Technical indicators
-            
-        Returns:
-            Trading signal dict or None if error
-        """
-        try:
-            # Get Claude's analysis
-            signal = self.ai_brain.analyze(market_data, indicators)
-            
-            # Add symbol to signal for execution
-            signal['symbol'] = symbol
-            
-            logger.debug(f"Claude decision for {symbol}: {signal['signal']} (confidence: {signal.get('confidence', 0):.2f})")
-            
-            return signal
-            
-        except Exception as e:
-            logger.error(f"Error getting Claude decision for {symbol}: {e}")
-            return None
-    
-    def _execute_signal(self, symbol: str, signal: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-        """
-        Execute trading signal through paper trader.
-        
-        Args:
-            symbol: Stock symbol
-            signal: Trading signal from Claude
-            current_price: Current market price
-            
-        Returns:
-            Execution result
-        """
-        try:
-            # Skip HOLD signals
-            if signal.get('signal') == 'HOLD':
-                return {
-                    'status': 'SKIPPED',
-                    'reason': 'HOLD signal - no action taken'
-                }
-            
-            # Get current account info for risk validation
-            account_info = self.paper_trader.get_account_info()
-            signal['available_capital'] = account_info['available_capital']
-            
-            # Validate trade with risk manager
-            current_positions = self.paper_trader.get_positions()
-            is_valid, rejection_reason = self.risk_manager.validate_trade(signal, current_positions)
-            
-            if not is_valid:
-                logger.info(f"Trade rejected for {symbol}: {rejection_reason}")
-                return {
-                    'status': 'REJECTED',
-                    'reason': rejection_reason
-                }
-            
-            # Calculate risk parameters
-            risk_params = self.risk_manager.calculate_risk_parameters(
-                symbol=symbol,
-                signal_type=signal['signal'],
-                entry_price=current_price,
-                capital=account_info['available_capital'],
-                stop_loss=signal.get('stop_loss'),
-                target=signal.get('target')
-            )
-            
-            # Update signal with risk manager calculations
-            signal.update({
-                'position_size': risk_params.position_size,
-                'stop_loss': risk_params.stop_loss,
-                'target': risk_params.target,
-                'entry_price': risk_params.entry_price,
-                'risk_amount': risk_params.risk_amount
-            })
-            
-            # Execute through paper trader
-            execution_result = self.paper_trader.execute_trade(signal, current_price)
-            
-            logger.info(f"Execution result for {symbol}: {execution_result.get('status')}")
-            
-            return execution_result
-            
-        except Exception as e:
-            logger.error(f"Error executing signal for {symbol}: {e}")
-            return {
-                'status': 'ERROR',
-                'reason': str(e)
-            }
-    
+
     def run_continuous_trading(self, max_cycles: int = 100, cycle_interval: int = 300):
         """
         Run continuous trading with comprehensive error recovery.
@@ -666,7 +536,7 @@ class ClaudeTrader:
         return 30.0  # Placeholder - implement proper tracking
     
     def _analyze_ai_performance(self) -> Dict[str, Any]:
-        """Analyze Claude AI decision quality"""
+        """Analyze AI decision quality"""
         if not self.decision_history:
             return {'no_data': True}
         
@@ -741,7 +611,7 @@ class ClaudeTrader:
         """
         if filename is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"claude_trader_report_{timestamp}.json"
+            filename = f"trading_report_{timestamp}.json"
         
         report = self.get_performance_report()
         
@@ -759,7 +629,7 @@ class ClaudeTrader:
     
     def close(self):
         """Cleanup and shutdown"""
-        logger.info("Shutting down Claude Trader")
+        logger.info("Shutting down Trading Orchestrator")
         
         # Generate final report
         final_report = self.get_performance_report()
@@ -771,16 +641,16 @@ class ClaudeTrader:
         if hasattr(self.data_collector, 'close'):
             self.data_collector.close()
         
-        logger.info("Claude Trader shutdown complete")
+        logger.info("Trading Orchestrator shutdown complete")
 
 
 def main():
-    """Test the Claude Trader system"""
-    print("🤖 Claude Trader - AI-Powered Trading System")
+    """Run a single test trading cycle and print a report (smoke check)."""
+    print("🤖 Trading Orchestrator - AI-Powered Trading System")
     print("=" * 50)
-    
-    # Initialize trader
-    trader = ClaudeTrader(initial_capital=10000, test_mode=True)
+
+    # Initialize orchestrator
+    trader = TradingOrchestrator(initial_capital=10000, test_mode=True)
     
     try:
         # Run a single trading cycle for testing
@@ -806,7 +676,7 @@ def main():
         
         # Show recent decisions
         if cycle_result['decisions']:
-            print(f"\n🧠 Recent Claude Decisions:")
+            print(f"\n🧠 Recent AI Decisions:")
             for decision in cycle_result['decisions'][:3]:  # Show first 3
                 signal = decision['signal']
                 print(f"  {decision['symbol']}: {signal['signal']} "
