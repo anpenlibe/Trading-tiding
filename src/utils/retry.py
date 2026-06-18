@@ -50,9 +50,7 @@ def retry_with_backoff(
                     
                     time.sleep(delay)
                     delay = min(delay * exponential_base, max_delay)
-            
-            return None  # Should never reach here
-        
+
         return wrapper
     return decorator
 
