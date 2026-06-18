@@ -358,13 +358,19 @@ class AIBrain(BaseDecisionModel):
                                 context: Dict[str, Any] = None) -> Dict[str, Any]:
         """Analyze entire portfolio at once - scales from 1 to N symbols."""
         try:
-            # Check circuit breaker
-            if self.consecutive_failures >= self.max_consecutive_failures:
-                logger.error(f"AI circuit breaker open - {self.consecutive_failures} consecutive failures")
-                return self._safe_portfolio_default_response(list(portfolio_data.keys()), "AI temporarily unavailable")
-
             if context is None:
                 context = {}
+
+            # Circuit breaker: once too many consecutive provider failures trip
+            # it, skip the doomed API call — but STILL run the rule-based portfolio
+            # fallback (RSI-based, no API calls) rather than returning blind HOLDs.
+            # This is the path backtest uses, so a provider outage mid-run would
+            # otherwise flatten every remaining timepoint to HOLD 0.0.
+            if self.consecutive_failures >= self.max_consecutive_failures:
+                logger.warning(
+                    f"AI circuit breaker open ({self.consecutive_failures} failures) - using rule-based portfolio fallback"
+                )
+                return self._fallback_portfolio_analysis(portfolio_data, portfolio_indicators)
 
             # Build comprehensive portfolio prompt
             prompt = self.prompt_builder.create_portfolio_analysis_prompt(

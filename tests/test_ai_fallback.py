@@ -89,3 +89,17 @@ def test_portfolio_fallback_has_wrapped_shape(exhausted_brain):
     assert 'decisions' in result
     assert 'TCS' in result['decisions']
     assert result['decisions']['TCS']['signal'] in ('BUY', 'SELL', 'HOLD')
+
+
+def test_open_circuit_breaker_portfolio_uses_rsi_fallback(exhausted_brain):
+    """The portfolio path (used by backtest) must ALSO run the rule-based RSI
+    fallback when the breaker is already open — not return blind HOLDs for every
+    symbol. On a long backtest the old behaviour flattened every timepoint after
+    the breaker tripped to HOLD 0.0.
+    """
+    exhausted_brain.consecutive_failures = exhausted_brain.max_consecutive_failures
+    result = exhausted_brain._analyze_portfolio_batch(
+        {'TCS': _ohlc()}, {'TCS': {'rsi_14': 25}}, {},  # oversold
+    )
+    assert result['decisions']['TCS']['signal'] == 'BUY'
+    assert 0 < result['decisions']['TCS']['confidence'] <= 1
