@@ -172,8 +172,11 @@ class DataCollector:
                             last_error = f"{api_name} returned no data"
                             continue
                     
-                    # Validate data
-                    is_valid, error = self.validator.validate(market_data)
+                    # Validate data, feeding the previous close so the price-jump
+                    # circuit breaker can fire on a discontinuity (e.g. a stale
+                    # mock bar that teleports price into the indicator window).
+                    previous_close = self.db.get_previous_close(symbol)
+                    is_valid, error = self.validator.validate(market_data, previous_close)
                     if not is_valid:
                         raise ValidationError(f"Validation failed: {error}")
                     

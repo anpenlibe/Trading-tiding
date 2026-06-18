@@ -7,7 +7,7 @@ module loads even when it isn't installed.
 
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -128,29 +128,47 @@ class ZerodhaAPI(BaseMarketDataAPI):
         return "Zerodha" if self.is_authenticated else "Zerodha(Unauthenticated)"
 
 class MockAPI(BaseMarketDataAPI):
-    """Mock API for testing during market closed hours"""
+    """Mock API for testing during market-closed hours / when live sources fail.
+
+    Base prices are anchored to each symbol's last real close in the bundled
+    snapshot (looked up lazily and cached), so generated bars are *continuous*
+    with the real history. Hardcoded bases used to drift far from reality (e.g.
+    RELIANCE 2850 vs a real 1566), teleporting price and pegging RSI/MACD to
+    extremes once the mock bar entered the indicator window.
+    """
+
+    DEFAULT_BASE = 1000.0  # fallback when a symbol isn't in the snapshot
 
     def __init__(self, **kwargs):
-        self.base_prices = {
-            "RELIANCE": 2850,
-            "TCS": 3650,
-            "INFY": 1450,
-            "HDFC": 1650,
-            "ICICIBANK": 980,
-            "SBIN": 1100,
-            "BHARTIARTL": 950,
-            "ITC": 440,
-            "KOTAKBANK": 1750,
-            "LT": 3200
-        }
+        self._base_cache: Dict[str, float] = {}
+
+    def _base_price(self, symbol: str) -> float:
+        """Last real close for `symbol` from the bundled snapshot (cached)."""
+        if symbol not in self._base_cache:
+            price = None
+            try:
+                import sqlite3
+                from src.data.config import BUNDLED_DB_PATH
+                conn = sqlite3.connect(BUNDLED_DB_PATH)
+                row = conn.execute(
+                    "SELECT close FROM price_data WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+                    (symbol,),
+                ).fetchone()
+                conn.close()
+                if row:
+                    price = float(row[0])
+            except Exception as e:
+                logger.debug(f"MockAPI base-price lookup failed for {symbol}: {e}")
+            self._base_cache[symbol] = price if price else self.DEFAULT_BASE
+        return self._base_cache[symbol]
 
     def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Generate mock data with realistic variations"""
+        """Generate a mock bar anchored to the symbol's last real close."""
         import random
 
         # Unknown symbols still get synthetic data so paper/test runs aren't
         # starved (mock is for pipeline testing, not realism).
-        base = self.base_prices.get(symbol, 1000.0)
+        base = self._base_price(symbol)
         variation = base * 0.01  # 1% variation
 
         # Generate realistic OHLC

@@ -52,5 +52,14 @@ def test_save_indicators_and_stats(db):
 
 
 def test_removed_methods_stay_removed(db):
-    for name in ("insert_price_data", "get_previous_close", "log_data_quality_issue"):
+    # get_previous_close was re-added (it now feeds the validator price-jump guard);
+    # insert_price_data and log_data_quality_issue remain removed.
+    for name in ("insert_price_data", "log_data_quality_issue"):
         assert not hasattr(db, name), f"{name} was dead and should stay removed"
+
+
+def test_get_previous_close(db):
+    assert db.get_previous_close("TCS") is None  # nothing stored yet
+    db.save_market_data(MarketData("TCS", datetime(2025, 11, 10, 10, 0, 0), 100.0, 105.0, 99.0, 102.0, 1000))
+    db.save_market_data(MarketData("TCS", datetime(2025, 11, 11, 10, 0, 0), 102.0, 108.0, 101.0, 107.0, 1000))
+    assert db.get_previous_close("TCS") == 107.0  # most recent stored close

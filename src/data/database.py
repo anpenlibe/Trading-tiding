@@ -218,6 +218,19 @@ class DatabaseManager:
             df = df.sort_values('timestamp')
         return df
 
+    def get_previous_close(self, symbol: str) -> Optional[float]:
+        """Most recent stored close for `symbol`, or None if none yet.
+
+        Feeds the validator's price-jump circuit breaker: when a new bar arrives,
+        comparing it to this previous close catches discontinuities (e.g. a stale
+        mock bar that teleports price) before they pollute the indicator window.
+        """
+        row = self.conn.execute(
+            "SELECT close FROM price_data WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
+            (symbol,),
+        ).fetchone()
+        return row['close'] if row else None
+
     def get_stats(self) -> Dict[str, int]:
         """Get database statistics (record + symbol counts)."""
         stats = {}

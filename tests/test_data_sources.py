@@ -39,6 +39,26 @@ def test_mock_returns_valid_ohlc(symbol):
     assert bar.timestamp.tzinfo is None  # naive, for DB compatibility
 
 
+def test_mock_base_anchored_to_snapshot():
+    """MockAPI bars must sit near the symbol's real last close (within the ~1%
+    variation band), not a stale hardcoded base. Pins the RSI-artifact fix where
+    RELIANCE's hardcoded 2850 vs a real ~1566 teleported price +82%."""
+    import sqlite3
+    from src.data.config import BUNDLED_DB_PATH
+    conn = sqlite3.connect(BUNDLED_DB_PATH)
+    real = conn.execute(
+        "SELECT close FROM price_data WHERE symbol='RELIANCE' ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()[0]
+    conn.close()
+    bar = MockAPI().fetch_ohlc("RELIANCE")
+    assert abs(bar.close - real) / real < 0.05  # was ~0.82 with the stale base
+
+
+def test_mock_unknown_symbol_uses_default_base():
+    bar = MockAPI().fetch_ohlc("NONEXISTENT_XYZ")
+    assert bar is not None and bar.close > 0  # default base, no crash
+
+
 def test_module_imports_without_kiteconnect(monkeypatch):
     """kiteconnect is imported lazily inside ZerodhaAPI.__init__, so the module
     must import and ZerodhaAPI must construct (unauthenticated) even if the
