@@ -57,41 +57,25 @@ class AIBrain(BaseDecisionModel):
             raise AIAnalysisError(f"AI initialization failed: {e}")
 
 
-    def get_required_indicators(self) -> list:
-        """Return list of indicators this model needs."""
-        return [
-            "sma_20", "sma_50", "sma_200",
-            "rsi_14",
-            "macd", "macd_signal", "macd_histogram",
-            "volume_avg_20",
-            "price_change_pct"
-        ]
-    
     @performance_tracker("ai_analysis")
     def analyze(self, market_data: pd.DataFrame, 
                indicators: Dict[str, float]) -> Dict[str, Any]:
         """Analyze market with comprehensive error handling."""
         try:
-            # Check if we've had too many failures
-            if self.consecutive_failures >= self.max_consecutive_failures:
-                logger.error(f"AI circuit breaker open - {self.consecutive_failures} consecutive failures")
-                return self._safe_default_response("AI temporarily unavailable")
-            
-            # Debug: Check data format
-            logger.debug(f"market_data type: {type(market_data)}")
+            # Validate data format first — without a usable DataFrame even the
+            # rule-based fallback can't run, so a safe HOLD is the only option.
             if isinstance(market_data, dict):
                 logger.error(f"Received dict instead of DataFrame: {list(market_data.keys())}")
                 return self._safe_default_response("Data format error - expected DataFrame")
-            
+
             if not hasattr(market_data, 'iloc'):
                 logger.error(f"Invalid market_data type: {type(market_data)}")
                 return self._safe_default_response("Invalid data format")
-            
-            # Get symbol from DataFrame
+
+            # Extract the latest bar once — both the AI path and the rule-based
+            # fallback below need it.
             symbol = market_data['symbol'].iloc[-1] if 'symbol' in market_data else "UNKNOWN"
             current_price = float(market_data['close'].iloc[-1])
-            
-            # Create market data object for analysis
             latest_data = MarketData(
                 symbol=symbol,
                 timestamp=pd.Timestamp.now(),
@@ -101,7 +85,18 @@ class AIBrain(BaseDecisionModel):
                 close=current_price,
                 volume=float(market_data['volume'].iloc[-1])
             )
-            
+
+            # Circuit breaker: after too many consecutive provider failures, skip
+            # the (doomed) API round-trip — but STILL run the rule-based fallback,
+            # which makes no API calls. This used to return a blind HOLD, which
+            # silently disabled the RSI fallback for the rest of a degraded run
+            # (every remaining symbol got HOLD 0.0 instead of a real signal).
+            if self.consecutive_failures >= self.max_consecutive_failures:
+                logger.warning(
+                    f"AI circuit breaker open ({self.consecutive_failures} failures) - using rule-based fallback"
+                )
+                return self._fallback_analysis(latest_data, indicators)
+
             # Build context
             context = {
                 'strategy': 'swing',
@@ -487,73 +482,4 @@ class AIBrain(BaseDecisionModel):
             'decisions': decisions,
             'symbols_analyzed': len(decisions),
         }
-
-    def _intelligent_fallback_analysis(self, portfolio_data: Dict[str, pd.DataFrame],
-                                     portfolio_indicators: Dict[str, Dict[str, float]],
-                                     context: Dict[str, Any], original_error: Exception) -> Dict[str, Any]:
-        """Intelligent fallback: Individual analysis for owned positions, safe defaults for others."""
-        if context is None:
-            context = {}
-
-        current_positions = context.get('current_positions', [])
-        decisions = {}
-        critical_symbols_analyzed = 0
-
-        # Priority 1: Analyze owned positions individually to prevent losses
-        if current_positions:
-            logger.info(f"Portfolio analysis failed, analyzing {len(current_positions)} owned positions individually")
-
-            for symbol in current_positions:
-                if symbol in portfolio_data and symbol in portfolio_indicators:
-                    try:
-                        # Use existing single-symbol analysis for owned positions
-                        market_data_obj = MarketData(
-                            symbol=symbol,
-                            timestamp=pd.Timestamp.now(),
-                            open=float(portfolio_data[symbol]['open'].iloc[-1]),
-                            high=float(portfolio_data[symbol]['high'].iloc[-1]),
-                            low=float(portfolio_data[symbol]['low'].iloc[-1]),
-                            close=float(portfolio_data[symbol]['close'].iloc[-1]),
-                            volume=float(portfolio_data[symbol]['volume'].iloc[-1])
-                        )
-
-                        # Try AI analysis first, fallback to rule-based if needed
-                        try:
-                            decisions[symbol] = self.analyze(portfolio_data[symbol], portfolio_indicators[symbol])
-                            critical_symbols_analyzed += 1
-                            logger.debug(f"Individual AI analysis successful for owned position: {symbol}")
-                        except Exception as individual_error:
-                            logger.debug(f"AI analysis failed for {symbol}, using rule-based fallback: {individual_error}")
-                            decisions[symbol] = self._fallback_analysis(
-                                market_data_obj, portfolio_indicators[symbol]
-                            )
-                            critical_symbols_analyzed += 1
-
-                    except Exception as symbol_error:
-                        logger.error(f"Complete analysis failure for owned position {symbol}: {symbol_error}")
-                        # Even owned positions get safe defaults if data is corrupted
-                        decisions[symbol] = self._safe_default_response(f"Data error for owned position: {str(symbol_error)}")
-                else:
-                    logger.warning(f"Missing data for owned position {symbol}")
-                    decisions[symbol] = self._safe_default_response(f"Missing data for owned position")
-
-        # Priority 2: Safe defaults for non-owned symbols (no individual analysis needed)
-        for symbol in portfolio_data.keys():
-            if symbol not in decisions:
-                decisions[symbol] = self._safe_default_response("Portfolio analysis failed - not owned, using safe default")
-
-        fallback_type = "individual_analysis_for_owned" if current_positions else "safe_defaults_only"
-
-        return {
-            'market_analysis': f'Intelligent fallback due to portfolio error: {str(original_error)[:100]}. Protected {len(current_positions)} owned positions with individual analysis.',
-            'decisions': decisions,
-            'symbols_analyzed': len(decisions),
-            'fallback_type': fallback_type,
-            'critical_symbols_analyzed': critical_symbols_analyzed,
-            'owned_positions_protected': len(current_positions)
-        }
-
-
-# Backward compatibility (deprecated)
-ClaudeAI = AIBrain
 

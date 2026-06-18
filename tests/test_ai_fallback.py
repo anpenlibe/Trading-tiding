@@ -66,6 +66,20 @@ def test_single_symbol_fallback_uses_rsi(exhausted_brain):
     assert 0 < decision['confidence'] <= 1
 
 
+def test_open_circuit_breaker_still_uses_rsi_fallback(exhausted_brain):
+    """With the AI circuit breaker already open, analyze() must STILL run the
+    rule-based RSI fallback (it makes no API calls) — not return a blind HOLD.
+
+    Pins the degraded-run bug: once 5 consecutive provider failures tripped the
+    breaker, every remaining symbol got HOLD 0.0, silently disabling the RSI
+    fallback for the rest of the cycle.
+    """
+    exhausted_brain.consecutive_failures = exhausted_brain.max_consecutive_failures
+    decision = exhausted_brain.analyze(_ohlc(), {'rsi_14': 25})  # oversold
+    assert decision['signal'] == 'BUY'
+    assert 0 < decision['confidence'] <= 1
+
+
 def test_portfolio_fallback_has_wrapped_shape(exhausted_brain):
     """Fallback portfolio result must be {'decisions': {...}}, populated."""
     result = exhausted_brain._analyze_portfolio_batch(

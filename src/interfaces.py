@@ -11,7 +11,7 @@ each layer's concrete classes implement:
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -71,10 +71,6 @@ class BaseDecisionModel(ABC):
     def analyze(self, market_data: pd.DataFrame, indicators: Dict[str, float]) -> Dict[str, Any]:
         """Return a decision dict with signal (BUY/SELL/HOLD), confidence,
         reasoning, and optional stop_loss / target."""
-
-    @abstractmethod
-    def get_required_indicators(self) -> List[str]:
-        """Indicators this model needs computed before analyze()."""
 
 
 class BaseRiskManager(ABC):
