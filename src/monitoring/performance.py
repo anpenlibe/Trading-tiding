@@ -68,24 +68,29 @@ class PerformanceMonitor:
 
 
 def performance_tracker(category: str):
-    """Decorator to track function performance."""
+    """Decorator that times a call and records it on the global monitor.
+
+    Records duration + success into get_monitor() so the performance dashboard's
+    operation stats are actually populated. (Previously the decorator only logged
+    a debug line and never called record_metric, leaving the dashboard's
+    "Operation Performance" section permanently empty.)
+    """
     def decorator(func: Callable):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             start = time.time()
             success = True
-            
+
             try:
-                result = func(*args, **kwargs)
-                return result
-            except Exception as e:
+                return func(*args, **kwargs)
+            except Exception:
                 success = False
                 raise
             finally:
                 duration = time.time() - start
-                # Log performance
+                get_monitor().record_metric(category, duration, success)
                 logger.debug(f"{category}.{func.__name__}: {duration:.3f}s")
-                
+
         return wrapper
     return decorator
 

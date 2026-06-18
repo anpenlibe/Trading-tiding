@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""
-Module: monitor.py
-Purpose: Monitor data collection status and quality
-Author: Trading Bot Developer
-Created: 2025-06-12
-Modified: 2025-06-12
+"""Data-collection monitoring dashboard.
+
+DataMonitor reads the runtime DB and reports collection status, latest prices,
+data-quality issues, missing bars, and indicator-calculation status. CLI flags:
+--auto (non-interactive), --export (daily CSV), --continuous (30s refresh).
 """
 
 import sqlite3
