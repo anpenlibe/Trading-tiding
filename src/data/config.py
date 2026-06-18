@@ -1,14 +1,8 @@
-"""
-Module: config.py
-Purpose: Configuration settings for the trading bot
-Author: Trading Bot Developer
-Created: 2025-06-12
-Modified: 2025-06-30 - UPDATED: Now uses centralized stock registry
+"""Central configuration for the trading bot.
 
-CHANGES:
-- SYMBOLS now imported from stock_registry.py
-- Added trading strategy symbol selection
-- Improved symbol management with sector awareness
+Loaded from .env (python-dotenv). SYMBOLS come from the stock registry, selected
+by TRADING_STRATEGY. Importing this module validates that at least one AI
+provider key is set and that the core risk parameters are sane.
 """
 
 import os
@@ -171,17 +165,6 @@ GROQ_MAX_TOKENS    = int(os.getenv("GROQ_MAX_TOKENS", "8000"))
 GROQ_TEMPERATURE   = float(os.getenv("GROQ_TEMPERATURE", "0.6"))
 # Available models: llama-3.3-70b-versatile, llama-3.1-70b-versatile, mixtral-8x7b-32768
 # Note: Coordinator uses both llama-3.3 and llama-3.1 with separate rate limit pools
-
-# Strategy Settings
-STRATEGIES = {
-    "mean_reversion": {
-        "enabled": True,
-        "lookback_period": 20,
-        "entry_threshold": 0.015,
-        "exit_threshold": 0.01,
-        "min_volume_ratio": 0.8
-    }
-}
 
 # Risk Management
 STOP_LOSS_PERCENT     = float(os.getenv("STOP_LOSS_PERCENT", "0.015"))
@@ -404,20 +387,10 @@ if TEST_MODE:
         MIN_TRADE_VALUE, MAX_POSITION_SIZE * 100, MAX_RISK_PER_TRADE * 100,
     )
 
-# Legacy test configuration for backwards compatibility
-MIN_TRADE_VALUE_TEST = 100  # Minimum trade value for testing
-
 # ============= DATA SOURCE SAFETY CONFIGURATION =============
 
 # Mock API Safety - CRITICAL for production
 ALLOW_MOCK_DATA_IN_LIVE_TRADING = False  # NEVER change this to True in production
-
-# Data source priority (1 = highest priority)
-DATA_SOURCE_PRIORITY = {
-    'zerodha': 1,      # Primary: Real market data
-    'yahoo': 2,        # Secondary: International/backup real data  
-    'mock': 999        # Testing only: Simulated data
-}
 
 # Trading mode validation
 REQUIRE_REAL_DATA_FOR_LIVE_TRADING = True

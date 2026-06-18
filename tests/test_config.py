@@ -32,3 +32,20 @@ def test_consumed_knobs_have_expected_defaults():
 def test_removed_dead_constant_is_gone():
     from src.data import config as c
     assert not hasattr(c, 'MAX_POSITION_SIZE_PERCENT')
+
+
+def test_vestigial_config_removed():
+    """Pins the cleanup removals: an unused mean-reversion STRATEGIES dict, a
+    legacy MIN_TRADE_VALUE_TEST, and DATA_SOURCE_PRIORITY (priority lives in
+    DataCollector._init_apis). All had zero references and no .env.example entry."""
+    from src.data import config as c
+    for name in ('STRATEGIES', 'MIN_TRADE_VALUE_TEST', 'DATA_SOURCE_PRIORITY'):
+        assert not hasattr(c, name), f"{name} was vestigial and should stay removed"
+
+
+def test_core_config_surface_intact():
+    """The documented config surface must remain importable."""
+    from src.data import config as c
+    for name in ('INITIAL_CAPITAL', 'SYMBOLS', 'MAX_RISK_PER_TRADE', 'DB_PATH',
+                 'BUNDLED_DB_PATH', 'TRADING_MODE', 'CACHE_TTL_SECONDS'):
+        assert hasattr(c, name), f"{name} is part of the public config surface"
