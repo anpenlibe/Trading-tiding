@@ -15,10 +15,10 @@ import pandas as pd
 from datetime import datetime, timezone
 
 from src.interfaces import BaseMarketDataAPI, MarketData
-from src.utils.logger import get_data_logger
+from src.utils.logger import setup_logger
 from src.data.config import MOCK_VOLUME_RANGE_MIN, MOCK_VOLUME_RANGE_MAX
 
-logger = get_data_logger()
+logger = setup_logger('data_collector', 'data_collector.log')
 
 from kiteconnect import KiteConnect
 import pandas as pd
@@ -51,29 +51,29 @@ class ZerodhaAPI(BaseMarketDataAPI):
                     instruments = self.kite.instruments()
                     if len(instruments) > 0:
                         self.is_authenticated = True
-                        logger.logger.info("Zerodha API authenticated successfully")
+                        logger.info("Zerodha API authenticated successfully")
                     else:
                         raise Exception("No instruments data received")
                 except Exception as e:
                     # Check if it's a permission issue vs auth issue
                     if "permission" in str(e).lower():
-                        logger.logger.warning(f"Zerodha API limited permissions: {e}")
-                        logger.logger.info("Basic auth successful but market data restricted")
+                        logger.warning(f"Zerodha API limited permissions: {e}")
+                        logger.info("Basic auth successful but market data restricted")
                         # Still mark as unauthenticated for market data purposes
                         self.is_authenticated = False
                     else:
-                        logger.logger.warning(f"Zerodha authentication failed: {e}")
-                    logger.logger.info("Will use fallback APIs for market data")
+                        logger.warning(f"Zerodha authentication failed: {e}")
+                    logger.info("Will use fallback APIs for market data")
                     self.is_authenticated = False
             else:
-                logger.logger.info("Zerodha credentials not configured - using MockAPI")
+                logger.info("Zerodha credentials not configured - using MockAPI")
                 self.is_authenticated = False
                 
         except ImportError:
-            logger.logger.warning("kiteconnect not installed - using MockAPI")
+            logger.warning("kiteconnect not installed - using MockAPI")
             self.is_authenticated = False
         except Exception as e:
-            logger.logger.error(f"Zerodha initialization error: {e}")
+            logger.error(f"Zerodha initialization error: {e}")
             self.is_authenticated = False
 
         # Preload instrument token mappings only if authenticated
@@ -86,7 +86,7 @@ class ZerodhaAPI(BaseMarketDataAPI):
             df = df[df["exchange"] == "NSE"]
             return dict(zip(df["tradingsymbol"], df["instrument_token"]))
         except Exception as e:
-            logger.logger.warning(f"Failed to load instrument tokens: {e}")
+            logger.warning(f"Failed to load instrument tokens: {e}")
             return {}
 
     def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
@@ -94,7 +94,7 @@ class ZerodhaAPI(BaseMarketDataAPI):
         try:
             token = self.tokens.get(symbol)
             if not token:
-                logger.logger.warning(f"Token not found for {symbol}")
+                logger.warning(f"Token not found for {symbol}")
                 return None
 
             token_str = str(token)
@@ -102,7 +102,7 @@ class ZerodhaAPI(BaseMarketDataAPI):
             quote_data = self.kite.quote([token])
 
             if token_str not in ohlc_data or token_str not in quote_data:
-                logger.logger.error(f"Token missing in Zerodha response for {symbol}")
+                logger.error(f"Token missing in Zerodha response for {symbol}")
                 return None
 
             ohlc = ohlc_data[token_str]["ohlc"]
@@ -122,7 +122,7 @@ class ZerodhaAPI(BaseMarketDataAPI):
             )
 
         except Exception as e:
-            logger.logger.error(f"Zerodha fetch failed for {symbol}: {e}")
+            logger.error(f"Zerodha fetch failed for {symbol}: {e}")
             return None
  
 
@@ -214,10 +214,10 @@ class YahooFinanceAPI(BaseMarketDataAPI):
             import time
             self.yf = yf
             self.time = time
-            logger.logger.info("Yahoo Finance API initialized with rate limiting")
+            logger.info("Yahoo Finance API initialized with rate limiting")
         except ImportError:
             self.yf = None
-            logger.logger.warning("yfinance not installed - Yahoo Finance API unavailable")
+            logger.warning("yfinance not installed - Yahoo Finance API unavailable")
     
     def get_name(self) -> str:
         return self.name
@@ -232,7 +232,7 @@ class YahooFinanceAPI(BaseMarketDataAPI):
         # Check if we're in a rate limit cooldown period
         if current_time < self.rate_limited_until:
             wait_time = self.rate_limited_until - current_time
-            logger.logger.info(f"Yahoo Finance: Waiting {wait_time:.1f}s due to rate limiting")
+            logger.info(f"Yahoo Finance: Waiting {wait_time:.1f}s due to rate limiting")
             self.time.sleep(wait_time)
             return
         
@@ -240,7 +240,7 @@ class YahooFinanceAPI(BaseMarketDataAPI):
         time_since_last = current_time - self.last_request_time
         if time_since_last < self.min_request_interval:
             wait_time = self.min_request_interval - time_since_last
-            logger.logger.debug(f"Yahoo Finance: Rate limiting - waiting {wait_time:.1f}s")
+            logger.debug(f"Yahoo Finance: Rate limiting - waiting {wait_time:.1f}s")
             self.time.sleep(wait_time)
         
         self.last_request_time = self.time.time()
@@ -254,11 +254,11 @@ class YahooFinanceAPI(BaseMarketDataAPI):
             # Set rate limited until timestamp
             self.rate_limited_until = self.time.time() + backoff_time
             
-            logger.logger.warning(f"Yahoo Finance: Rate limited (attempt {self.retry_count}/{self.max_retries}). "
+            logger.warning(f"Yahoo Finance: Rate limited (attempt {self.retry_count}/{self.max_retries}). "
                                 f"Backing off for {backoff_time}s")
             
             if self.retry_count >= self.max_retries:
-                logger.logger.error("Yahoo Finance: Max retries exceeded. Disabling for this session.")
+                logger.error("Yahoo Finance: Max retries exceeded. Disabling for this session.")
                 return False
             
             return True  # Can retry
@@ -298,14 +298,14 @@ class YahooFinanceAPI(BaseMarketDataAPI):
                 
         except Exception as e:
             error_msg = str(e)
-            logger.logger.debug(f"Yahoo Finance availability test failed: {error_msg}")
+            logger.debug(f"Yahoo Finance availability test failed: {error_msg}")
             
             # Handle rate limiting
             if self._handle_rate_limit_error(error_msg):
                 return False  # Temporarily unavailable due to rate limiting
             
             # Other errors - consider permanently unavailable for this session
-            logger.logger.warning(f"Yahoo Finance not available: {error_msg}")
+            logger.warning(f"Yahoo Finance not available: {error_msg}")
             return False
     
     def fetch_ohlc(self, symbol: str, interval: str = "5m") -> Optional[MarketData]:
@@ -315,7 +315,7 @@ class YahooFinanceAPI(BaseMarketDataAPI):
         
         # Check if we're available (handles rate limiting)
         if not self.is_available():
-            logger.logger.debug(f"Yahoo Finance temporarily unavailable for {symbol}")
+            logger.debug(f"Yahoo Finance temporarily unavailable for {symbol}")
             return None
         
         try:
@@ -349,7 +349,7 @@ class YahooFinanceAPI(BaseMarketDataAPI):
             hist = ticker.history(period=period, interval=yahoo_interval)
             
             if hist.empty:
-                logger.logger.debug(f"No data from Yahoo for {symbol}")
+                logger.debug(f"No data from Yahoo for {symbol}")
                 return None
             
             # Get latest row
@@ -378,15 +378,15 @@ class YahooFinanceAPI(BaseMarketDataAPI):
             
         except Exception as e:
             error_msg = str(e)
-            logger.logger.debug(f"Yahoo Finance fetch error for {symbol}: {error_msg}")
+            logger.debug(f"Yahoo Finance fetch error for {symbol}: {error_msg}")
             
             # Handle rate limiting errors
             if self._handle_rate_limit_error(error_msg):
-                logger.logger.info(f"Yahoo Finance rate limited for {symbol}, will retry later")
+                logger.info(f"Yahoo Finance rate limited for {symbol}, will retry later")
                 return None
             
             # For other errors, log and return None
-            logger.logger.warning(f"Yahoo Finance error for {symbol}: {error_msg}")
+            logger.warning(f"Yahoo Finance error for {symbol}: {error_msg}")
             return None
     
     def fetch_historical(self, symbol: str, days: int = 30) -> Optional[pd.DataFrame]:
@@ -396,7 +396,7 @@ class YahooFinanceAPI(BaseMarketDataAPI):
         
         # Check if we're available (handles rate limiting)
         if not self.is_available():
-            logger.logger.debug(f"Yahoo Finance temporarily unavailable for historical {symbol}")
+            logger.debug(f"Yahoo Finance temporarily unavailable for historical {symbol}")
             return None
         
         try:
@@ -419,7 +419,7 @@ class YahooFinanceAPI(BaseMarketDataAPI):
             hist = ticker.history(period=period, interval="1d")
             
             if hist.empty:
-                logger.logger.debug(f"No historical data from Yahoo for {symbol}")
+                logger.debug(f"No historical data from Yahoo for {symbol}")
                 return None
             
             # Limit to requested days
@@ -447,13 +447,13 @@ class YahooFinanceAPI(BaseMarketDataAPI):
             
         except Exception as e:
             error_msg = str(e)
-            logger.logger.debug(f"Yahoo historical fetch error for {symbol}: {error_msg}")
+            logger.debug(f"Yahoo historical fetch error for {symbol}: {error_msg}")
             
             # Handle rate limiting errors
             if self._handle_rate_limit_error(error_msg):
-                logger.logger.info(f"Yahoo Finance rate limited for historical {symbol}, will retry later")
+                logger.info(f"Yahoo Finance rate limited for historical {symbol}, will retry later")
                 return None
             
             # For other errors, log and return None
-            logger.logger.warning(f"Yahoo historical error for {symbol}: {error_msg}")
+            logger.warning(f"Yahoo historical error for {symbol}: {error_msg}")
             return None
