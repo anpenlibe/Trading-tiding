@@ -1,40 +1,31 @@
-"""Custom exceptions for the trading system."""
+"""Custom exception hierarchy for the trading system.
+
+Every error derives from TradingSystemError, so a caller can catch the whole
+family with a single ``except TradingSystemError``. Only exceptions that are
+actually raised somewhere live here; see tests/test_exceptions.py for the
+ones removed during cleanup.
+"""
+
 
 class TradingSystemError(Exception):
     """Base exception for all trading system errors."""
-    pass
+
 
 class DataCollectionError(TradingSystemError):
-    """Raised when data collection fails."""
-    pass
+    """Raised when market-data collection fails."""
+
 
 class ValidationError(TradingSystemError):
     """Raised when data validation fails."""
-    pass
+
 
 class AIAnalysisError(TradingSystemError):
-    """Raised when AI analysis fails."""
-    pass
+    """Raised when AI analysis fails (e.g. all providers exhausted)."""
 
-class RiskValidationError(TradingSystemError):
-    """Raised when risk validation fails."""
-    pass
-
-class TradeExecutionError(TradingSystemError):
-    """Raised when trade execution fails."""
-    pass
 
 class DatabaseError(TradingSystemError):
     """Raised when database operations fail."""
-    pass
+
 
 class ConfigurationError(TradingSystemError):
     """Raised when configuration is invalid."""
-    pass
-
-class APIError(TradingSystemError):
-    """Raised when external API calls fail."""
-    def __init__(self, message, api_name=None, status_code=None):
-        super().__init__(message)
-        self.api_name = api_name
-        self.status_code = status_code
