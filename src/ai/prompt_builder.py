@@ -11,7 +11,12 @@ from src.data.config import (
 
 
 class PromptBuilder:
-    """Build structured prompts for Claude AI."""
+    """Build structured prompts for the AI decision model (provider-agnostic).
+
+    Produces the single-symbol and portfolio-batch prompts and parses the JSON
+    responses back into decision dicts. Used for whichever provider the
+    coordinator routes to (Groq/Gemini/Claude), not Claude specifically.
+    """
     
     @staticmethod
     def safe_format(value, default=0, decimals=2):
@@ -58,7 +63,7 @@ class PromptBuilder:
                              market_data: pd.DataFrame,
                              indicators: Dict[str, float],
                              context: Dict[str, Any] = None) -> str:
-        """Create a structured analysis prompt for Claude."""
+        """Create a structured single-symbol analysis prompt for the AI."""
         
         if context is None:
             context = {}
@@ -151,7 +156,7 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
     
     @staticmethod
     def parse_response(response_text: str, current_price: float = 100.0) -> Dict[str, Any]:
-        """Parse Claude's response into structured data."""
+        """Parse the AI's single-symbol JSON response into a decision dict."""
         try:
             # Find JSON in response (Claude sometimes includes explanatory text)
             start_idx = response_text.find('{')
@@ -200,28 +205,6 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
                 "target": None
             }
     
-    @staticmethod
-    def create_context(strategy: str = "swing", 
-                      capital: float = INITIAL_CAPITAL,
-                      risk_level: str = "moderate") -> Dict[str, Any]:
-        """Create trading context for prompt."""
-        risk_multipliers = {
-            "conservative": 0.5,
-            "moderate": 1.0,
-            "aggressive": 1.5
-        }
-        
-        multiplier = risk_multipliers.get(risk_level, 1.0)
-
-        return {
-            'strategy': f"{strategy.title()} Trading",
-            'capital': capital,
-            'max_risk': MAX_RISK_PER_TRADE * multiplier,
-            'stop_loss': STOP_LOSS_PERCENT * multiplier,
-            'take_profit': TAKE_PROFIT_PERCENT,
-            'risk_level': risk_level
-        }
-
     @staticmethod
     def create_portfolio_analysis_prompt(portfolio_data: Dict[str, pd.DataFrame],
                                        portfolio_indicators: Dict[str, Dict[str, float]],
@@ -427,7 +410,7 @@ EMERGENCY THRESHOLDS (provide for ALL positions):
     def parse_portfolio_response(response_text: str,
                                portfolio_data: Dict[str, pd.DataFrame],
                                context: Dict[str, Any] = None) -> Dict[str, Any]:
-        """Parse Claude's portfolio response into structured data."""
+        """Parse the AI's portfolio JSON response into per-symbol decision dicts."""
         try:
             # Find JSON in response
             start_idx = response_text.find('{')
