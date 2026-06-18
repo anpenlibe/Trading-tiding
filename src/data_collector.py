@@ -1,9 +1,7 @@
 """Enhanced data collector with robust error handling."""
 
-import time
 import pandas as pd
 from typing import List, Optional, Dict, Any
-from datetime import datetime
 from collections import defaultdict
 
 from src.data.cache import MemoryCache
@@ -129,6 +127,16 @@ class DataCollector:
 
         return apis
     
+    @staticmethod
+    def _fetch_or_raise(api: BaseMarketDataAPI, symbol: str) -> MarketData:
+        """Fetch OHLC, raising on an empty result so the circuit breaker counts
+        it as a failure. Uses a plain RuntimeError (not TradingSystemError) so the
+        collect loop's generic handler catches it and moves to the next source."""
+        data = api.fetch_ohlc(symbol)
+        if not data:
+            raise RuntimeError(f"{api.__class__.__name__} returned no data for {symbol}")
+        return data
+
     @retry_with_backoff(max_retries=2, exceptions=(DataCollectionError,))
     @performance_tracker("data_collection")
     def collect_and_store(self, symbol: str) -> bool:
@@ -149,16 +157,20 @@ class DataCollector:
                 
                 try:
                     self.stats['api_calls'][api.get_name()] += 1
-                    
-                    # Use circuit breaker if available
+
+                    # Use circuit breaker if available. Route through a wrapper
+                    # that raises on an empty result so a persistently-failing
+                    # source (e.g. expired-token Zerodha, rate-limited Yahoo —
+                    # both return None rather than raising) actually trips its
+                    # breaker after a few misses and is then skipped fast, instead
+                    # of being re-probed (~seconds each) for every symbol.
                     if circuit_breaker:
-                        market_data = circuit_breaker.call(api.fetch_ohlc, symbol)
+                        market_data = circuit_breaker.call(self._fetch_or_raise, api, symbol)
                     else:
                         market_data = api.fetch_ohlc(symbol)
-                    
-                    if not market_data:
-                        last_error = f"{api_name} returned no data"
-                        continue
+                        if not market_data:
+                            last_error = f"{api_name} returned no data"
+                            continue
                     
                     # Validate data
                     is_valid, error = self.validator.validate(market_data)
@@ -220,30 +232,6 @@ class DataCollector:
         except Exception as e:
             raise DatabaseError(f"Database storage failed: {e}")
     
-    def collect_all_symbols(self) -> Dict[str, bool]:
-        """Collect data for all configured symbols."""
-        logger.info(f"Starting collection for {len(SYMBOLS)} symbols")
-        start_time = time.time()
-        
-        results = {}
-        for symbol in SYMBOLS:
-            try:
-                success = self.collect_and_store(symbol)
-                results[symbol] = success
-                
-                # Small delay to avoid overwhelming APIs
-                time.sleep(0.5)
-                
-            except Exception as e:
-                logger.error(f"Unexpected error collecting {symbol}: {e}")
-                results[symbol] = False
-        
-        duration = time.time() - start_time
-        successful = sum(1 for success in results.values() if success)
-        
-        logger.info(f"Collection complete: {successful}/{len(SYMBOLS)} symbols in {duration:.1f}s")
-        return results
-    
     def get_recent_data(self, symbol: str, periods: int = 50) -> Optional[pd.DataFrame]:
         """Get recent data with error handling."""
         try:
@@ -251,43 +239,6 @@ class DataCollector:
         except Exception as e:
             logger.error(f"Failed to get recent data for {symbol}: {e}")
             return None
-    
-    def fetch_with_fallback(self, symbol: str) -> Optional[MarketData]:
-        """Fetch data with automatic fallback to backup sources."""
-        # Check cache first
-        cache_key = f"ohlc_{symbol}"
-        cached_data = self.cache.get(cache_key)
-        if cached_data:
-            self.stats['cache_hits'] += 1
-            return cached_data
-        
-        # Try each API in order
-        for api in self.apis:
-            try:
-                self.stats['api_calls'][api.get_name()] += 1
-                data = api.fetch_ohlc(symbol)
-                
-                if data:
-                    # Validate data
-                    is_valid, error = self.validator.validate(data)
-                    if is_valid:
-                        # CRITICAL: Validate data source against trading mode
-                        self.safety_validator.validate_market_data(data)
-                        
-                        # Cache successful fetch
-                        self.cache.set(cache_key, data)
-                        return data
-                    else:
-                        logger.warning(f"Validation failed for {symbol} from {api.get_name()}: {error}")
-                        
-            except TradingSystemError:
-                # CRITICAL: Re-raise safety violations immediately
-                raise
-            except Exception as e:
-                logger.warning(f"API {api.get_name()} failed for {symbol}: {e}")
-                continue
-        
-        return None
     
     def process_and_save(self, data: MarketData) -> bool:
         """Process and save market data with indicators."""
@@ -355,15 +306,6 @@ class DataCollector:
             logger.info("DataCollector shutdown complete")
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
-    
-    # Legacy compatibility methods
-    def save_market_data(self, data: MarketData) -> bool:
-        """Legacy method for compatibility."""
-        return self.db.save_market_data(data)
-    
-    def save_indicators(self, symbol: str, timestamp: datetime, indicators: Dict[str, float]) -> bool:
-        """Legacy method for compatibility."""
-        return self.db.save_indicators(symbol, timestamp, indicators)
 
 
 # Factory functions for safe DataCollector creation
