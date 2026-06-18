@@ -187,7 +187,7 @@ The system has several applications for different use cases:
                                │
                                ▼
 ┌─────────────────┐
-│ TradingSignal   │
+│ Signal (dict)   │
 │                 │
 │ • BUY/SELL/HOLD │
 │ • Confidence    │

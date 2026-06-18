@@ -105,7 +105,7 @@ def check_file_structure() -> Tuple[bool, List[str]]:
     """Check that required files and directories exist."""
     issues = []
     
-    required_dirs = ['apps', 'src/core', 'src/data', 'docs/api', 'tests']
+    required_dirs = ['apps', 'src/core', 'src/data', 'tests']
     required_files = ['apps/trader.py', 'src/core/ai_brain.py', 'src/data/config.py']
     
     for directory in required_dirs:
