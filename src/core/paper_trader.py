@@ -1,12 +1,12 @@
-"""
-Module: paper_trader.py
-Purpose: Simulated trading system for testing strategies without real money
-Author: Trading Bot Developer
-Created: 2025-06-15
-Modified: 2025-06-15
+"""Paper-trading executor — simulates fills, positions, and performance.
 
-This module implements paper trading functionality to track simulated trades
-and calculate performance metrics.
+Implements BaseTradingExecutor. Models commission and slippage, manages one
+open position per symbol, auto-closes on stop-loss/target, and tracks realized/
+unrealized P&L plus performance metrics (win rate, drawdown, profit factor).
+
+Entry points: ``execute_trade(signal, price)`` is the signal-based path the AI
+pipeline uses; ``execute_simple_trade(...)`` and the contract ``place_order(...)``
+are thin convenience wrappers over it.
 """
 
 import os
@@ -19,7 +19,6 @@ import pandas as pd
 from src.interfaces import BaseTradingExecutor
 from src.data.config import (
     INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
-    DEFAULT_TRADE_HISTORY_LIMIT,
     EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 )
 from src.utils.logger import setup_logger
@@ -105,33 +104,16 @@ class PaperTrader(BaseTradingExecutor):
         
         logger.info(f"Paper Trader initialized with capital: ₹{initial_capital}")
     
-    def place_order(self, symbol: str, quantity: int, order_type: str, 
-                   price: Optional[float] = None) -> Dict[str, Any]:
+    def place_order(self, symbol: str, quantity: int, order_type: str,
+                    price: Optional[float] = None) -> Dict[str, Any]:
+        """BaseTradingExecutor entry point — a paper fill needs an explicit price.
+
+        Delegates to execute_simple_trade (the shared simple-order path) rather
+        than being an interface-only stub.
         """
-        Place a paper trade order.
-        
-        Args:
-            symbol: Stock symbol
-            quantity: Number of shares
-            order_type: BUY or SELL
-            price: Limit price (uses current price if None)
-            
-        Returns:
-            Order confirmation or rejection details
-        """
-        try:
-            # This method is mainly for interface compliance
-            # Actual trading logic is in execute_trade
-            return {
-                "status": "PENDING",
-                "message": "Use execute_trade for paper trading",
-                "symbol": symbol,
-                "quantity": quantity,
-                "order_type": order_type
-            }
-        except Exception as e:
-            logger.error(f"Error placing order: {e}")
-            return {"status": "ERROR", "message": str(e)}
+        if price is None:
+            return {"status": "REJECTED", "reason": "Paper trading requires an explicit fill price"}
+        return self.execute_simple_trade(symbol, order_type, price, quantity)
     
     @performance_tracker("trade_execution")
     def execute_trade(self, signal: Dict[str, Any], current_price: float) -> Dict[str, Any]:
@@ -148,7 +130,12 @@ class PaperTrader(BaseTradingExecutor):
         try:
             symbol = signal.get('symbol')
             action = signal.get('signal')  # BUY, SELL, HOLD
-            
+
+            # Reject a signal with no symbol up front: otherwise a malformed
+            # signal opens a phantom position keyed by None ("BUY executed: None").
+            if not symbol:
+                return {"status": "REJECTED", "reason": "Signal missing 'symbol'"}
+
             # Skip if HOLD signal
             if action == 'HOLD':
                 return {
@@ -287,7 +274,8 @@ class PaperTrader(BaseTradingExecutor):
         self.open_positions[symbol] = trade
         self.all_trades.append(trade)
         self.total_trades += 1
-        
+        self._recompute_capital()  # keep current_capital/drawdown current post-buy
+
         # Log trade
         self._log_trade(trade)
         
@@ -352,25 +340,13 @@ class PaperTrader(BaseTradingExecutor):
         else:
             self.losing_trades += 1
 
-        # Move to closed trades
+        # Move to closed trades, then recompute capital. Must happen AFTER the
+        # del, else the closed position is double-counted (its proceeds are
+        # already in available_capital).
         self.closed_trades.append(position)
         del self.open_positions[symbol]
+        self._recompute_capital()
 
-        # Recompute capital AFTER removing the closed position (else it gets
-        # double-counted, since its proceeds are already in available_capital),
-        # using the market value of the remaining positions.
-        self.current_capital = self.available_capital + sum(
-            pos.quantity * pos.current_price for pos in self.open_positions.values()
-        )
-
-        # Update peak and drawdown
-        if self.current_capital > self.peak_capital:
-            self.peak_capital = self.current_capital
-        
-        drawdown = (self.peak_capital - self.current_capital) / self.peak_capital
-        if drawdown > self.max_drawdown:
-            self.max_drawdown = drawdown
-        
         # Log trade
         self._log_trade(position)
         
@@ -417,11 +393,8 @@ class PaperTrader(BaseTradingExecutor):
                     logger.info(f"Target reached for {symbol}")
                     self._execute_sell(symbol, position.quantity, current_price,
                                      {"exit_reason": "TARGET_HIT"})
-        
-        # Update current capital
-        self.current_capital = self.available_capital + sum(
-            pos.quantity * pos.current_price for pos in self.open_positions.values()
-        )
+
+        self._recompute_capital()
     
     def get_positions(self) -> Dict[str, Any]:
         """Get current positions and their status"""
@@ -484,13 +457,24 @@ class PaperTrader(BaseTradingExecutor):
             "avg_loss": avg_loss
         }
     
-    def get_trade_history(self, limit: int = DEFAULT_TRADE_HISTORY_LIMIT) -> List[Dict[str, Any]]:
-        """Get recent trade history"""
-        all_trades = self.all_trades[-limit:]
-        return [asdict(trade) for trade in all_trades]
-    
+    def _recompute_capital(self):
+        """Recompute current_capital = cash + mark-to-market value of open
+        positions, then refresh peak capital and max drawdown.
+
+        Called after every buy, sell, and price update so account metrics
+        (including drawdown) stay current — not just at sell time.
+        """
+        self.current_capital = self.available_capital + sum(
+            pos.quantity * pos.current_price for pos in self.open_positions.values()
+        )
+        if self.current_capital > self.peak_capital:
+            self.peak_capital = self.current_capital
+        drawdown = (self.peak_capital - self.current_capital) / self.peak_capital
+        if drawdown > self.max_drawdown:
+            self.max_drawdown = drawdown
+
     def _validate_trade(self, symbol: str, action: str, quantity: int, price: float) -> Dict[str, Any]:
-        """Validate trade parameters - FIXED VERSION"""
+        """Validate trade parameters before execution."""
         try:
             # Basic validations
             if quantity <= 0:
@@ -511,7 +495,6 @@ class PaperTrader(BaseTradingExecutor):
                         "reason": f"Insufficient capital. Need ₹{total_cost:.2f}, have ₹{self.available_capital:.2f}"
                     }
             
-                # REMOVED: Position size check that was too restrictive for testing
                 # Check if already have position
                 if symbol in self.open_positions:
                     return {
