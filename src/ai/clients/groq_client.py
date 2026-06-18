@@ -10,13 +10,11 @@ logger = setup_logger(__name__, 'groq_client.log')
 
 
 class GroqClient(BaseAIClient):
-    """Client for Groq API using OpenAI-compatible endpoint.
+    """Client for Groq API using the OpenAI-compatible chat completions endpoint.
 
-    Extracted from ai_brain.py lines 115-128 (init) and 419-458 (API call).
-
-    Key Enhancement: Supports multiple Groq models with separate rate limit tracking.
-    Each model (llama-3.3-70b, llama-3.1-70b, etc.) has its own rate limit pool,
-    allowing us to use them as independent fallback options.
+    Each Groq model has its own rate-limit pool, so the coordinator can use
+    several models (gpt-oss-120b, llama-3.3-70b, gpt-oss-20b) as independent
+    fallback steps.
     """
 
     def __init__(self, api_key: str, model: str, max_tokens: int, temperature: float):
@@ -139,29 +137,6 @@ class GroqClient(BaseAIClient):
         return f"groq:{self.model}"
 
     def _get_rate_limit_delay(self) -> float:
-        """Groq has strict rate limits, need conservative delay.
-
-        Free tier: 30 RPM = 1 call per 2 seconds
-        Using 10s delay to account for TPM limits and rolling windows.
-        """
+        """Conservative spacing for Groq's strict free tier (~30 RPM / 6K TPM
+        per model): 10s between calls absorbs TPM limits and rolling windows."""
         return 10.0  # 10 seconds between calls (6 calls/minute)
-
-    def get_rate_limits(self) -> dict:
-        """Return Groq free tier rate limits.
-
-        Note: These are PER-MODEL limits. Each model has separate quotas,
-        which is why we can use llama-3.3 and llama-3.1 as independent
-        fallback options.
-        """
-        return {
-            "RPM": 30,  # Requests per minute
-            "TPM": 6000,  # Tokens per minute (prompt + response)
-            "RPD": 1000,  # Requests per day
-        }
-
-    def supports_model(self, model_name: str) -> bool:
-        """Check if this client's model matches the given name.
-
-        Useful for coordinator to verify client configuration.
-        """
-        return self.model == model_name

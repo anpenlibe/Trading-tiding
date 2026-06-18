@@ -11,11 +11,8 @@ logger = setup_logger(__name__, 'gemini_client.log')
 
 
 class GeminiClient(BaseAIClient):
-    """Client for Google Gemini API using REST API.
-
-    Extracted from ai_brain.py lines 103-114 (init) and 361-417 (API call).
-    Uses REST API which has proven more reliable than SDK in production.
-    """
+    """Client for Google Gemini via the REST API (more reliable than the SDK
+    in production, and keeps the API key out of logged URLs — see call_api)."""
 
     def __init__(self, api_key: str, model: str, max_tokens: int, temperature: float):
         """Initialize Gemini client.
@@ -116,22 +113,6 @@ class GeminiClient(BaseAIClient):
         return "gemini"
 
     def _get_rate_limit_delay(self) -> float:
-        """Gemini has model-specific rate limits, minimal delay."""
+        """Gemini's per-model limits are generous (Flash 15 RPM / Pro 2 RPM);
+        a small 500ms margin is enough — the coordinator handles 429 cooldowns."""
         return 0.5  # 500ms safety margin
-
-    def get_rate_limits(self) -> dict:
-        """Return Gemini rate limits (model-dependent).
-
-        Flash models: 15 RPM free tier
-        Pro models: 2 RPM free tier
-        """
-        if "flash" in self.model.lower():
-            return {
-                "RPM": 15,
-                "TPM": 1000000,  # 1M TPM for flash
-            }
-        else:  # Pro models
-            return {
-                "RPM": 2,
-                "TPM": 32000,  # 32k per request
-            }

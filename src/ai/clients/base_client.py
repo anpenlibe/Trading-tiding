@@ -2,7 +2,7 @@
 
 import time
 from abc import ABC, abstractmethod
-from typing import Dict, Optional
+from typing import Optional
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, 'ai_clients.log')
@@ -64,28 +64,8 @@ class BaseAIClient(ABC):
         """
         pass
 
-    def get_model_name(self) -> str:
-        """Return model identifier."""
-        return self.model
-
-    def get_rate_limits(self) -> Dict[str, int]:
-        """Return rate limit information.
-
-        Returns:
-            Dict with keys: RPM (requests per minute), TPM (tokens per minute)
-            Base implementation returns placeholder values.
-        """
-        return {
-            "RPM": 60,  # Default, override in subclasses
-            "TPM": 10000,  # Default, override in subclasses
-        }
-
     def enforce_rate_limit(self):
-        """Enforce rate limiting between API calls.
-
-        This method ensures minimum delay between consecutive calls based on
-        the provider's rate limit policy. Extracted from ai_brain.py:76-90.
-        """
+        """Sleep just enough to respect this provider's min delay between calls."""
         if self.last_api_call_time == 0:
             self.last_api_call_time = time.time()
             return

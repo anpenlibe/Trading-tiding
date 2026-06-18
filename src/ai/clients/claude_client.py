@@ -7,10 +7,8 @@ from src.exceptions import ConfigurationError
 
 
 class ClaudeClient(BaseAIClient):
-    """Client for Claude AI API using Anthropic SDK.
-
-    Extracted from ai_brain.py lines 92-102 (init) and 310-318 (API call).
-    """
+    """Client for the Claude API using the Anthropic SDK (the one provider here
+    that uses an SDK rather than raw REST)."""
 
     def __init__(self, api_key: str, model: str, max_tokens: int, temperature: float):
         """Initialize Claude client.
@@ -58,12 +56,5 @@ class ClaudeClient(BaseAIClient):
         return "claude"
 
     def _get_rate_limit_delay(self) -> float:
-        """Claude has generous rate limits, minimal delay needed."""
+        """Claude has generous rate limits; a 500ms margin is enough."""
         return 0.5  # 500ms safety margin
-
-    def get_rate_limits(self) -> dict:
-        """Return Claude rate limits (tier-dependent, these are conservative)."""
-        return {
-            "RPM": 50,  # Conservative estimate
-            "TPM": 40000,  # Conservative estimate for tier 1
-        }
