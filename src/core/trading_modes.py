@@ -1,7 +1,8 @@
-"""
-Trading Mode Safety System
-Purpose: Prevent accidental use of mock data in live trading
-Created: 2025-01-11
+"""Trading-mode safety system.
+
+Prevents unsafe data sources per mode — chiefly, mock data must never reach live
+trading. The mode (PAPER/LIVE/BACKTEST) is authoritative: TradingSafetyConfig's
+__post_init__ derives the safety flags from it, overriding any passed in.
 """
 
 from enum import Enum
@@ -194,42 +195,8 @@ class TradingSafetyValidator:
         return True
 
 
-def create_trading_mode_from_config(mode_str: str) -> TradingSafetyConfig:
-    """
-    Create TradingSafetyConfig from string configuration.
-    
-    Args:
-        mode_str: Trading mode as string ('paper', 'live', 'backtest')
-        
-    Returns:
-        TradingSafetyConfig: Configured safety settings
-    """
-    try:
-        mode = TradingMode(mode_str.lower())
-        return TradingSafetyConfig(mode=mode)
-    except ValueError:
-        available_modes = [m.value for m in TradingMode]
-        raise ValueError(f"Invalid trading mode: {mode_str}. Available: {available_modes}")
-
-
-# Default configurations for common use cases
-PAPER_TRADING_CONFIG = TradingSafetyConfig(
-    mode=TradingMode.PAPER,
-    require_live_data=False,
-    allow_mock_fallback=True,
-    require_user_confirmation=False
-)
-
-LIVE_TRADING_CONFIG = TradingSafetyConfig(
-    mode=TradingMode.LIVE,
-    require_live_data=True,
-    allow_mock_fallback=False,
-    require_user_confirmation=True
-)
-
-BACKTEST_CONFIG = TradingSafetyConfig(
-    mode=TradingMode.BACKTEST,
-    require_live_data=False,
-    allow_mock_fallback=False,
-    require_user_confirmation=False
-)
+# Default configurations per mode. Only `mode` is given — __post_init__ derives
+# the safety flags, so passing them here would be redundant (and overridden).
+PAPER_TRADING_CONFIG = TradingSafetyConfig(mode=TradingMode.PAPER)
+LIVE_TRADING_CONFIG = TradingSafetyConfig(mode=TradingMode.LIVE)
+BACKTEST_CONFIG = TradingSafetyConfig(mode=TradingMode.BACKTEST)
