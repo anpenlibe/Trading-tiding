@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
-"""
-Module: historical_simulator.py
-Purpose: Simulate trading system on historical data for backtesting
-Author: Trading Bot Developer
-Created: 2025-06-16
-Modified: 2025-10-03 - Updated to use AIBrain (multi-provider)
+"""Historical backtester.
 
-This module allows you to run your trading system on historical data,
-simulating real-time conditions for strategy testing and validation.
-
-CHANGES:
-- 2025-10-03: Updated to use AIBrain (was ClaudeAI)
-- 2025-06-30: Changed from ai_brain_optimized to ai_brain
-- Added risk manager integration
-- Updated to use claude_trader unified pipeline
+Replays the live trading pipeline (AIBrain → SimpleRiskManager → PaperTrader)
+over the bundled OHLCV snapshot, sampling decision points at a configurable
+interval, to test strategies under simulated real-time conditions.
 """
 
 import os
@@ -138,7 +128,6 @@ class SimulationDataCollector:
     def __init__(self, historical_data: pd.DataFrame):
         self.historical_data = historical_data
         self.current_time = None
-        # FIXED: No more IndicatorCalculator - using unified engine
         logger.info("Simulation data collector initialized")
     
     def set_current_time(self, timestamp: pd.Timestamp):
@@ -188,15 +177,7 @@ class SimulationDataCollector:
             (self.historical_data['timestamp'] <= self.current_time)
         ].tail(periods)
         
-        # FIXED: Check if DataFrame is empty and what columns exist
         if symbol_data.empty:
-            return pd.DataFrame()
-
-        # FIXED: Only select columns that actually exist
-        required_columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-        available_columns = [col for col in required_columns if col in symbol_data.columns]
-        
-        if not available_columns:
             return pd.DataFrame()
 
         return symbol_data[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
@@ -206,9 +187,59 @@ class SimulationDataCollector:
         df = self.get_historical_data_for_indicators(symbol)
         if len(df) < 20:  # Minimum data for indicators
             return {}
-        
-        # FIXED: Use unified indicator engine
+
         return calculate_all_indicators(df)
+
+
+def select_simulation_timestamps(all_timestamps, start_date, end_date, interval_minutes):
+    """Pick the bars to simulate from a chronological list of timestamps.
+
+    Selection rules:
+    - Keep only bars whose date is within [start_date, end_date].
+    - Prefer intraday bars at/after 10:00 (skip the pre-open / opening-auction
+      noise). If the snapshot has no such bars in the window (a pure-daily
+      snapshot only carries a midnight bar per day), relax that filter so the
+      backtest still runs instead of silently simulating nothing.
+    - Space kept bars at least `interval_minutes` apart using CUMULATIVE timing
+      (gap measured from the last KEPT bar). This is robust across weekends and
+      holidays — unlike exact modulo alignment, which silently dropped a sample
+      whenever the N-days-later slot fell on a non-trading day and then never
+      re-aligned to subsequent trading days.
+
+    Pure function (no DB / no side effects) so it can be unit-tested directly.
+    """
+    start = pd.Timestamp(start_date).date()
+    end = pd.Timestamp(end_date).date()
+
+    def in_window(ts):
+        return start <= ts.date() <= end
+
+    candidates = sorted(ts for ts in all_timestamps if in_window(ts) and ts.hour >= 10)
+    if not candidates:
+        candidates = sorted(ts for ts in all_timestamps if in_window(ts))
+        if candidates:
+            logger.warning(
+                "No intraday (>=10:00) bars in window; falling back to daily bars."
+            )
+
+    picked = []
+    last = None
+    for ts in candidates:
+        if last is None or (ts - last).total_seconds() / 60 >= interval_minutes:
+            picked.append(ts)
+            last = ts
+    return picked
+
+
+def format_interval(minutes):
+    """Human-readable rendering of a minute count (days / hours / minutes)."""
+    if minutes % 1440 == 0:
+        days = minutes // 1440
+        return f"{days} day{'s' if days != 1 else ''}"
+    if minutes % 60 == 0:
+        hours = minutes // 60
+        return f"{hours} hour{'s' if hours != 1 else ''}"
+    return f"{minutes} minute{'s' if minutes != 1 else ''}"
 
 
 class HistoricalSimulator:
@@ -231,7 +262,7 @@ class HistoricalSimulator:
         
         # Components (will be initialized as needed)
         self.ai_brain = None
-        self.risk_manager = None  # FIXED: Added risk manager
+        self.risk_manager = None
         self.paper_trader = None
         
         logger.info(f"Historical simulator initialized for {config.start_date} to {config.end_date}")
@@ -288,7 +319,6 @@ class HistoricalSimulator:
             self.config.enable_ai_brain = False
         
         try:
-            # FIXED: Add risk manager integration
             if self.config.enable_ai_brain:  # Only need risk manager if using AI
                 from src.core.risk_manager import SimpleRiskManager
                 self.risk_manager = SimpleRiskManager()
@@ -328,34 +358,16 @@ class HistoricalSimulator:
         self.initialize_components()
         self.load_simulation_data()
         
-        # Get unique timestamps in chronological order
+        # Get unique timestamps in chronological order, then pick the bars to
+        # simulate (in-window, intraday-preferred, spaced by the interval). The
+        # selection logic lives in a pure, unit-tested helper.
         all_timestamps = sorted(self.simulation_data['timestamp'].unique())
-
-        # Filter timestamps based on simulation_interval_minutes and start from 10:00 AM
-        # Only simulate the actual target date, not the historical context days
-        timestamps = []
-        simulation_start_date = pd.Timestamp(self.config.start_date).date()
-        simulation_end_date = pd.Timestamp(self.config.end_date).date()
-
-        # Calculate proper intervals from start time
-        first_valid_time = None
-        for ts in all_timestamps:
-            if (simulation_start_date <= ts.date() <= simulation_end_date and ts.hour >= 10):
-                first_valid_time = ts
-                break
-
-        for ts in all_timestamps:
-            # Only process timestamps within the actual simulation date range
-            if (simulation_start_date <= ts.date() <= simulation_end_date and ts.hour >= 10):
-                if first_valid_time is None:
-                    continue
-
-                # Calculate minutes elapsed since first valid time
-                time_diff = (ts - first_valid_time).total_seconds() / 60
-
-                # Check if this timestamp is at the correct interval
-                if time_diff % self.config.simulation_interval_minutes == 0:
-                    timestamps.append(ts)
+        timestamps = select_simulation_timestamps(
+            all_timestamps,
+            self.config.start_date,
+            self.config.end_date,
+            self.config.simulation_interval_minutes,
+        )
 
         self.simulation_stats['start_time'] = datetime.now()
         self.simulation_stats['total_ticks'] = len(timestamps)
@@ -524,47 +536,7 @@ class HistoricalSimulator:
 
             except Exception as e:
                 logger.error(f"Portfolio analysis error at {timestamp}: {e}")
-                # Fallback to individual analysis is currently disabled for testing.
-                # This can be re-enabled for live trading to ensure robustness.
-                # self._fallback_individual_analysis(portfolio_data, portfolio_indicators, current_prices, timestamp)
 
-    def _fallback_individual_analysis(self, portfolio_data, portfolio_indicators, current_prices, timestamp):
-        """Fallback to individual symbol analysis if portfolio analysis fails"""
-        logger.warning("Falling back to individual symbol analysis")
-
-        for symbol in portfolio_data.keys():
-            try:
-                if symbol in portfolio_indicators and symbol in current_prices:
-                    # Use single-symbol analysis as fallback
-                    signal = self.ai_brain.analyze(portfolio_data[symbol], portfolio_indicators[symbol])
-                    self.simulation_stats['ai_decisions'] += 1
-
-                    # Execute trade if needed
-                    if (self.config.enable_paper_trading and
-                        self.paper_trader and
-                        signal.get('signal') != "HOLD"):
-
-                        trade_result = self._execute_simulated_trade(
-                            symbol, signal, current_prices[symbol], timestamp
-                        )
-
-                        if trade_result.get('status') == 'EXECUTED':
-                            self.trades_executed.append({
-                                'timestamp': timestamp,
-                                'symbol': symbol,
-                                'action': signal['signal'],
-                                'price': current_prices[symbol],
-                                'quantity': signal.get('position_size', 1),
-                                'reasoning': signal.get('reasoning', ''),
-                                'confidence': signal.get('confidence', 0),
-                                'stop_loss': signal.get('stop_loss'),
-                                'target': signal.get('target')
-                            })
-                            self.simulation_stats['trades_count'] += 1
-
-            except Exception as e:
-                logger.debug(f"Fallback analysis error for {symbol}: {e}")
-    
     def _execute_simulated_trade(self, symbol: str, signal: Dict, current_price: float, timestamp: pd.Timestamp) -> Dict:
         """Execute a trade using the unified pipeline approach"""
         try:
@@ -611,8 +583,7 @@ class HistoricalSimulator:
             
             # Add symbol to the signal dictionary before execution
             signal['symbol'] = symbol
-            
-            # FIXED: Use correct execute_trade method
+
             return self.paper_trader.execute_trade(signal, current_price)
             
         except Exception as e:
@@ -629,7 +600,7 @@ class HistoricalSimulator:
         logger.info("SIMULATION COMPLETE")
         logger.info("="*60)
 
-        # FIXED: Handle None end_time safely
+        # Stamp timestamps if the run was interrupted before they were set
         if self.simulation_stats['end_time'] is None:
             self.simulation_stats['end_time'] = datetime.now()
     
@@ -657,8 +628,7 @@ class HistoricalSimulator:
             
             # Update positions with final prices
             self.paper_trader.update_positions(current_prices)
-            
-            # FIXED: Use correct method name
+
             account_info = self.paper_trader.get_account_info()
             logger.info(f"Final Capital: ₹{account_info['current_capital']:.2f}")
             logger.info(f"Total Return: {account_info['total_return']:+.2f}%")
@@ -699,172 +669,146 @@ class HistoricalSimulator:
             self.data_provider.close()
 
 
-def create_default_config() -> SimulationConfig:
-    """Create a default simulation configuration"""
-    # Use last 7 days of data if available
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-    
-    return SimulationConfig(
-        start_date=start_date,
-        end_date=end_date,
-        symbols=SYMBOLS[:3],  # Test with first 3 symbols
-        initial_capital=INITIAL_CAPITAL,
-        speed_multiplier=10.0,  # 10x speed
-        enable_ai_brain=True,
-        enable_paper_trading=True
-    )
+
+def prompt(text, default=""):
+    """input() that returns ``default`` when stdin is exhausted (piped / CI),
+    so non-interactive runs never crash with EOFError."""
+    try:
+        return input(text).strip()
+    except EOFError:
+        return default
+
+
+def build_arg_parser():
+    parser = argparse.ArgumentParser(description='Historical trading simulation')
+    parser.add_argument('--auto', action='store_true', help='Run with defaults, no prompts')
+    parser.add_argument('--days', type=int, default=3, help='Days to simulate, ending at the last available date (default: 3)')
+    parser.add_argument('--symbols', nargs='+', help='Symbols to simulate (default: all configured)')
+    parser.add_argument('--speed', type=float, default=5.0, help='Speed multiplier; >=100 skips the inter-tick sleep (default: 5.0)')
+    parser.add_argument('--sim-interval', type=int, default=30, help='Minutes between decision points (default: 30)')
+    parser.add_argument('--interval-days', type=int, help='Days between decision points (overrides --sim-interval; e.g. 3)')
+    parser.add_argument('--start-date', type=str, help='Explicit window start (YYYY-MM-DD)')
+    parser.add_argument('--end-date', type=str, help='Explicit window end (YYYY-MM-DD)')
+    return parser
+
+
+def resolve_interval_minutes(args):
+    """--interval-days is a convenience for day-scale steps and wins over
+    --sim-interval (expressing 3 days as 4320 minutes is unintuitive)."""
+    return args.interval_days * 1440 if args.interval_days else args.sim_interval
+
+
+def resolve_window(args, available_start, available_end, interactive):
+    """Decide ``(start_date, end_date, speed)`` for the run.
+
+    Explicit --start-date/--end-date always win. A non-interactive run otherwise
+    simulates the last --days days; an interactive run offers a menu. Relative
+    windows anchor to the LAST available data date (not today) so they land
+    inside the bundled snapshot.
+    """
+    data_end = pd.Timestamp(available_end)
+
+    def lookback(days):
+        return (data_end - timedelta(days=days)).strftime('%Y-%m-%d')
+
+    if args.start_date and args.end_date:
+        return args.start_date, args.end_date, args.speed
+
+    if not interactive:
+        return lookback(args.days), available_end, args.speed
+
+    print("\nSimulation options:")
+    print("1. Last 3 days (recommended)   3. Last month       5. All available data")
+    print("2. Last week                   4. Custom range")
+    choice = prompt("\nChoice (1-5): ", "1") or "1"
+
+    if choice == "2":
+        return lookback(7), available_end, 10.0
+    if choice == "3":
+        return lookback(30), available_end, 50.0
+    if choice == "4":
+        start = prompt(f"Start date (YYYY-MM-DD, earliest {available_start}): ", available_start) or available_start
+        end = prompt(f"End date (YYYY-MM-DD, latest {available_end}): ", available_end) or available_end
+        return start, end, float(prompt("Speed multiplier [10.0]: ", "10.0") or "10.0")
+    if choice == "5":
+        return available_start, available_end, 100.0
+    if choice != "1":
+        print("Invalid choice, using last 3 days")
+    return lookback(3), available_end, 5.0
+
+
+def prompt_interval_minutes():
+    """Interactive interval menu; returns minutes between decision points."""
+    presets = {"1": 30, "2": 15, "3": 5, "4": 1, "5": 60}
+    print("\nSimulation interval options:")
+    print("1. 30 minutes (default)   3. 5 minutes   5. 1 hour")
+    print("2. 15 minutes             4. 1 minute    6. Custom")
+    choice = prompt("Choose interval (1-6) [1]: ", "1") or "1"
+    if choice in presets:
+        return presets[choice]
+    if choice == "6":
+        try:
+            minutes = int(prompt("Custom interval in minutes: ", "30"))
+            if minutes > 0:
+                return minutes
+        except ValueError:
+            pass
+        print("Invalid interval, using 30 minutes")
+    return 30
 
 
 def main():
-    """Main function for running historical simulation"""
-    parser = argparse.ArgumentParser(description='Historical trading simulation')
-    parser.add_argument('--auto', action='store_true', help='Run in automated mode with defaults')
-    parser.add_argument('--days', type=int, default=3, help='Number of days to simulate (default: 3)')
-    parser.add_argument('--symbols', nargs='+', help='Symbols to simulate (default: all configured)')
-    parser.add_argument('--speed', type=float, default=5.0, help='Simulation speed multiplier (default: 5.0)')
-    parser.add_argument('--sim-interval', type=int, default=30, help='Simulation interval in minutes (default: 30)')
-    parser.add_argument('--start-date', type=str, help='Start date for simulation (YYYY-MM-DD)')
-    parser.add_argument('--end-date', type=str, help='End date for simulation (YYYY-MM-DD)')
-    args = parser.parse_args()
-    
-    print("🕰️  HISTORICAL DATA SIMULATION")
-    print("="*60)
-    
-    # Use specified symbols or default to all configured
-    symbols = args.symbols if args.symbols else SYMBOLS
-    
-    # Check available data
+    args = build_arg_parser().parse_args()
+
+    # A run is interactive only when nothing pins it down: no --auto, no explicit
+    # window, and a real TTY on stdin. Otherwise we must never prompt -- doing so
+    # previously crashed piped/CI runs with EOFError.
+    explicit_dates = bool(args.start_date and args.end_date)
+    interactive = not args.auto and not explicit_dates and sys.stdin.isatty()
+
+    print("\U0001f570\ufe0f  HISTORICAL DATA SIMULATION")
+    print("=" * 60)
+
+    symbols = args.symbols or SYMBOLS
     provider = HistoricalDataProvider(BUNDLED_DB_PATH)
-    start_date, end_date = provider.get_data_range(symbols)
+    available_start, available_end = provider.get_data_range(symbols)
     provider.close()
-    
-    if not start_date:
-        print("❌ No historical data found. Please run data collection first.")
+
+    if not available_start:
+        print("\u274c No historical data found. Run data collection first.")
         return
-    
-    print(f"📊 Available data: {start_date} to {end_date}")
-    print(f"📈 Symbols: {', '.join(symbols)}")
-    
-    if args.auto:
-        # Automated mode - use command line args
-        choice = "1"  # Default to last N days
-        print(f"\n🤖 Automated mode: Simulating last {args.days} days")
+
+    print(f"\U0001f4ca Available data: {available_start} to {available_end}")
+    print(f"\U0001f4c8 Symbols: {', '.join(symbols)}")
+
+    start_date, end_date, speed = resolve_window(args, available_start, available_end, interactive)
+    config = SimulationConfig(
+        start_date=start_date,
+        end_date=end_date,
+        symbols=symbols,
+        initial_capital=INITIAL_CAPITAL,
+        speed_multiplier=speed,
+        simulation_interval_minutes=resolve_interval_minutes(args),
+    )
+
+    if interactive:
+        config.enable_ai_brain = prompt("\nEnable AI Brain? (y/n) [y]: ", "y").lower() != 'n'
+        config.simulation_interval_minutes = prompt_interval_minutes()
+        config.enable_paper_trading = prompt("Enable Paper Trading? (y/n) [y]: ", "y").lower() != 'n'
+    elif explicit_dates:
+        print(f"\n\U0001f916 Explicit window {start_date} \u2192 {end_date}")
     else:
-        # Interactive mode
-        print("\nSimulation options:")
-        print("1. Last 3 days (recommended)")
-        print("2. Last week")
-        print("3. Last month")
-        print("4. Custom date range")
-        print("5. Use all available data")
-        
-        choice = input("\nChoice (1-5): ").strip()
-    
-    config = create_default_config()
-    config.symbols = symbols  # Use the selected symbols
-    config.simulation_interval_minutes = args.sim_interval
+        print(f"\n\U0001f916 Automated mode: last {args.days} days")
 
-    # Relative windows ("last N days") are anchored to the last available data
-    # date, NOT today — otherwise they fall entirely outside the bundled snapshot.
-    data_end = pd.Timestamp(end_date)
+    print(f"\n\U0001f680 Simulating {config.start_date} \u2192 {config.end_date}")
+    print(f"\u26a1 Speed: {config.speed_multiplier}x   "
+          f"\u23f1\ufe0f  Interval: {format_interval(config.simulation_interval_minutes)}")
+    print(f"\U0001f9e0 AI Brain: {'\u2705' if config.enable_ai_brain else '\u274c'}   "
+          f"\U0001f4b0 Paper Trading: {'\u2705' if config.enable_paper_trading else '\u274c'}")
 
-    if args.start_date and args.end_date:
-        config.start_date = args.start_date
-        config.end_date = args.end_date
-        config.speed_multiplier = args.speed
-    elif choice == "1":
-        days_to_simulate = args.days if args.auto else 3
-        config.start_date = (data_end - timedelta(days=days_to_simulate)).strftime('%Y-%m-%d')
-        config.end_date = end_date
-        config.speed_multiplier = args.speed if args.auto else 5.0
-    elif choice == "2":
-        config.start_date = (data_end - timedelta(days=7)).strftime('%Y-%m-%d')
-        config.end_date = end_date
-        config.speed_multiplier = 10.0
-    elif choice == "3":
-        config.start_date = (data_end - timedelta(days=30)).strftime('%Y-%m-%d')
-        config.end_date = end_date
-        config.speed_multiplier = 50.0
-    elif choice == "4":
-        if args.auto:
-            # Use reasonable defaults for automated mode
-            config.start_date = (data_end - timedelta(days=args.days)).strftime('%Y-%m-%d')
-            config.end_date = end_date
-            config.speed_multiplier = args.speed
-        else:
-            config.start_date = input(f"Start date (YYYY-MM-DD, earliest: {start_date}): ").strip()
-            config.end_date = input(f"End date (YYYY-MM-DD, latest: {end_date}): ").strip()
-            config.speed_multiplier = float(input("Speed multiplier (1.0 = real time, 10.0 = 10x faster): ") or "10.0")
-    elif choice == "5":
-        config.start_date = start_date
-        config.end_date = end_date
-        config.speed_multiplier = 100.0
-    else:
-        print("Invalid choice, using default (last 3 days)")
-    
-    # Configure components
-    if args.auto:
-        # Automated mode - use defaults
-        config.enable_ai_brain = True
-        config.enable_paper_trading = True
-        print(f"\n🤖 Automated configuration: AI enabled, Paper trading enabled")
-    else:
-        # Interactive mode
-        if input(f"\nEnable AI Brain? (y/n) [y]: ").strip().lower() != 'n':
-            config.enable_ai_brain = True
-        else:
-            config.enable_ai_brain = False
+    if interactive:
+        prompt("\nPress Enter to start...")
 
-        # Prompt for simulation interval
-        print("\nSimulation interval options:")
-        print("1. 30 minutes (default)")
-        print("2. 15 minutes")
-        print("3. 5 minutes")
-        print("4. 1 minute")
-        print("5. 1 hour")
-        print("6. Custom interval")
-        interval_choice = input("Choose simulation interval (1-6) [1]: ").strip() or "1"
-
-        if interval_choice == "2":
-            config.simulation_interval_minutes = 15
-        elif interval_choice == "3":
-            config.simulation_interval_minutes = 5
-        elif interval_choice == "4":
-            config.simulation_interval_minutes = 1
-        elif interval_choice == "5":
-            config.simulation_interval_minutes = 60
-        elif interval_choice == "6":
-            custom_interval = input("Enter custom interval in minutes (e.g., 2, 45, 90): ").strip()
-            try:
-                config.simulation_interval_minutes = int(custom_interval)
-                if config.simulation_interval_minutes <= 0:
-                    print("Invalid interval, using default (30 minutes)")
-                    config.simulation_interval_minutes = 30
-            except ValueError:
-                print("Invalid interval format, using default (30 minutes)")
-                config.simulation_interval_minutes = 30
-        else:
-            config.simulation_interval_minutes = 30
-
-        if input(f"Enable Paper Trading? (y/n) [y]: ").strip().lower() != 'n':
-            config.enable_paper_trading = True
-        else:
-            config.enable_paper_trading = False
-    
-    print(f"\n🚀 Starting simulation from {config.start_date} to {config.end_date}")
-    print(f"⚡ Speed: {config.speed_multiplier}x")
-    print(f"⏱️  Simulation Interval: {config.simulation_interval_minutes} minutes")
-    print(f"🧠 AI Brain: {'✅' if config.enable_ai_brain else '❌'}")
-    print(f"💰 Paper Trading: {'✅' if config.enable_paper_trading else '❌'}")
-    print("\nPress Ctrl+C to stop the simulation at any time")
-    
-    if not args.auto:
-        input("Press Enter to start...")
-    else:
-        print("🚀 Starting automated simulation...")
-    
-    # Run simulation
     simulator = HistoricalSimulator(config)
     try:
         simulator.run_simulation()

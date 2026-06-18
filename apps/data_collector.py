@@ -90,9 +90,13 @@ def main():
     )
     args = parser.parse_args()
 
-    # Interactive prompt for days if not provided on CLI
+    # Interactive prompt for days if not provided on CLI. Skip gracefully when
+    # stdin isn't a TTY (piped / cron / CI) instead of crashing with EOFError.
     if args.days is None:
-        resp = input(f"Enter number of past days to fetch (press Enter to use period={args.period}): ").strip()
+        try:
+            resp = input(f"Enter number of past days to fetch (press Enter to use period={args.period}): ").strip()
+        except EOFError:
+            resp = ""
         if resp:
             try:
                 args.days = int(resp)
