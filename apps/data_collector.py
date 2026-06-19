@@ -1,208 +1,114 @@
-"""
-collect_historical_data.py - Unified Historical Data Collection
-
-FIXED ISSUES:
-- Now uses config.SYMBOLS instead of hardcoded list  
-- Uses DataCollector's unified pipeline for validation and indicators
-- Proper encapsulation - no direct database access
-- Historical data now gets same validation and indicator processing as live data
-
-Features:
-- CLI flags: --period (1mo/60d/6mo), --interval (1m/5m/15m/30m/1d)
-- Interactive prompt: if --days not provided, ask user at runtime
-- Data stored via DataCollector unified pipeline
-- UPSERT handling via database UNIQUE constraints
-"""
-
 #!/usr/bin/env python3
+"""Historical OHLCV collection from Zerodha into the interval-aware price_data table.
+
+Fetches candles for ``config.SYMBOLS`` (or ``--symbols``) at a chosen interval and
+bulk-inserts the raw bars, stamping each with its interval so multiple intervals
+(e.g. 1m intraday + 1d daily) coexist in one DB.
+
+Zerodha caps historical range per request by interval (1m ≈ 60 days), so the
+window is split into chunks. Unlike the old per-bar path, this does NOT recompute
+indicators per candle — the feature layer computes indicators on demand, and the
+``indicators`` table is unused — so a ~1M-row pull stays fast.
+
+Examples:
+    python apps/data_collector.py --interval 1m --period 6mo
+    python apps/data_collector.py --interval 1d --days 545          # ~18 months daily
+"""
 
 import argparse
 import logging
-import time
-import sys
 import os
+import sys
+import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
-# Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_collector import DataCollector
-from src.data.data_sources import ZerodhaAPI, MarketData
-from src.data.config import SYMBOLS  # FIXED: Import from config instead of hardcoding
+from src.data.data_sources import ZerodhaAPI
+from src.data.database import DatabaseManager
+from src.data.config import SYMBOLS, DB_PATH
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  DEFAULT CONFIGS (overridable via CLI or prompt)
-# ──────────────────────────────────────────────────────────────────────────────
-DEFAULT_PERIOD = "1mo"       # fallback period if no --days
-DEFAULT_COLLECTION_INTERVAL = "5m"      # 1m, 5m, 15m, 30m, 1d
+# Map our interval labels → Zerodha interval names and per-request day caps.
+# Zerodha limits: minute=60d, 3–30min=100d, day=2000d. We stay just under.
+ZERODHA_INTERVAL = {"1m": "minute", "5m": "5minute", "15m": "15minute",
+                    "30m": "30minute", "1d": "day"}
+MAX_CHUNK_DAYS = {"1m": 58, "5m": 95, "15m": 95, "30m": 95, "1d": 1900}
 
-INTERVAL_MAP = {
-    "1m": "minute",
-    "5m": "5minute",
-    "15m": "15minute",
-    "30m": "30minute",
-    "1d": "day",
-}
+PERIOD_DAYS = {"1mo": 30, "60d": 60, "6mo": 180, "12mo": 365, "18mo": 545}
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  UTILITIES
-# ──────────────────────────────────────────────────────────────────────────────
 
-def compute_date_range(period: str | None = None, days: int | None = None):
-    """Return (from_date, to_date) based on either explicit days or a known period."""
+def compute_date_range(period: str | None, days: int | None):
+    """Return (from_date, to_date); explicit --days wins over --period."""
     to_date = datetime.now()
-    if days is not None:
-        return to_date - timedelta(days=days), to_date
+    span = days if days is not None else PERIOD_DAYS[period]
+    return to_date - timedelta(days=span), to_date
 
-    match period:
-        case "1mo":  from_date = to_date - timedelta(days=30)
-        case "60d":  from_date = to_date - timedelta(days=60)
-        case "6mo":  from_date = to_date - timedelta(days=180)
-        case _: raise ValueError(f"Unsupported period: {period}")
-    return from_date, to_date
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  MAIN ENTRYPOINT
-# ──────────────────────────────────────────────────────────────────────────────
+def date_chunks(from_date, to_date, max_days):
+    """Yield (chunk_from, chunk_to) windows no longer than max_days."""
+    cur = from_date
+    while cur < to_date:
+        nxt = min(cur + timedelta(days=max_days), to_date)
+        yield cur, nxt
+        cur = nxt
+
+
+def build_arg_parser():
+    p = argparse.ArgumentParser(description="Fetch historical Zerodha candles into price_data.")
+    p.add_argument("--days", type=int, help="Past days to fetch (overrides --period)")
+    p.add_argument("--period", default="1mo", choices=list(PERIOD_DAYS), help="Preset period if --days absent")
+    p.add_argument("--interval", default="1d", choices=list(ZERODHA_INTERVAL), help="Candle interval")
+    p.add_argument("--symbols", nargs="+", help="Symbols to fetch (overrides config)")
+    return p
+
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch historical candles and store via DataCollector unified pipeline."
-    )
-    parser.add_argument(
-        "--days", type=int,
-        help="Number of past days to fetch (overrides --period)"
-    )
-    parser.add_argument(
-        "--period", default=DEFAULT_PERIOD,
-        choices=["1mo", "60d", "6mo"],
-        help="Preset period if --days not given"
-    )
-    parser.add_argument(
-        "--interval", default=DEFAULT_COLLECTION_INTERVAL,
-        choices=list(INTERVAL_MAP.keys()),
-        help="Candle interval"
-    )
-    parser.add_argument(
-        "--symbols", nargs='+',
-        help="List of symbols to fetch (overrides config)"
-    )
-    args = parser.parse_args()
+    args = build_arg_parser().parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-    # Interactive prompt for days if not provided on CLI. Skip gracefully when
-    # stdin isn't a TTY (piped / cron / CI) instead of crashing with EOFError.
-    if args.days is None:
-        try:
-            resp = input(f"Enter number of past days to fetch (press Enter to use period={args.period}): ").strip()
-        except EOFError:
-            resp = ""
-        if resp:
-            try:
-                args.days = int(resp)
-            except ValueError:
-                print(f"Invalid input '{resp}', proceeding with period={args.period}.")
-
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
-
-    # Initialize collector and API
-    collector = DataCollector()
     zerodha = ZerodhaAPI()
+    if not zerodha.is_authenticated:
+        logging.error("Zerodha not authenticated — refresh the access token "
+                      "(scripts/generate_zerodha_token.py) and retry.")
+        return
 
-    # Compute date range
-    from_date, to_date = compute_date_range(
-        period=args.period,
-        days=args.days
-    )
-    interval = INTERVAL_MAP[args.interval]
+    db = DatabaseManager(DB_PATH)
+    from_date, to_date = compute_date_range(args.period, args.days)
+    zint = ZERODHA_INTERVAL[args.interval]
+    max_days = MAX_CHUNK_DAYS[args.interval]
+    symbols = args.symbols or SYMBOLS
 
-    symbols_to_fetch = args.symbols if args.symbols else SYMBOLS
-    
-    logging.info(f"Historical data collection started")
-    logging.info(f"Symbols: {len(symbols_to_fetch)} to fetch")
-    logging.info(f"Period: {from_date} to {to_date}")
-    logging.info(f"Interval: {interval}")
-    
-    total_processed = 0
+    logging.info("Collecting %s candles for %d symbols: %s → %s (chunks ≤ %dd)",
+                 args.interval, len(symbols), from_date.date(), to_date.date(), max_days)
+
     total_saved = 0
-
-    # Loop through symbols and fetch
-    for symbol in symbols_to_fetch:
+    skipped = []
+    for symbol in symbols:
         token = zerodha.tokens.get(symbol)
         if not token:
-            logging.warning("Skipping %s: Token not found", symbol)
+            skipped.append(symbol)
+            logging.warning("Skipping %s: no instrument token", symbol)
             continue
 
-        try:
-            logging.info(
-                "Fetching %s candles (%s) from %s to %s",
-                symbol, interval, from_date, to_date
-            )
-            hist = zerodha.kite.historical_data(
-                instrument_token=token,
-                from_date=from_date,
-                to_date=to_date,
-                interval=interval,
-                continuous=False,
-            )
-
-            saved = 0
-            processed = 0
-            
+        sym_saved = 0
+        for cfrom, cto in date_chunks(from_date, to_date, max_days):
+            try:
+                hist = zerodha.kite.historical_data(token, cfrom, cto, zint, continuous=False)
+            except Exception as exc:
+                logging.error("  %s %s→%s: %s", symbol, cfrom.date(), cto.date(), exc)
+                continue
             for row in hist:
-                processed += 1
-                
-                # Create MarketData object
-                market_data = MarketData(
-                    symbol=symbol,
-                    timestamp=row["date"],
-                    open=row["open"],
-                    high=row["high"],
-                    low=row["low"],
-                    close=row["close"],
-                    volume=row["volume"],
-                    source="zerodha_historical",
-                )
-                
-                # FIXED: Use unified pipeline instead of direct database access
-                # This ensures historical data gets same validation and indicators as live data
-                success = collector.process_and_save(market_data)
-                if success:
-                    saved += 1
+                row["symbol"] = symbol
+            sym_saved += db.save_bars_bulk(hist, interval=args.interval)
+            time.sleep(0.4)  # respect Zerodha historical rate limit (~3 req/s)
 
-            total_processed += processed
-            total_saved += saved
-            
-            logging.info("%s: Processed %d candles, saved %d (%.1f%% success)", 
-                        symbol, processed, saved, 
-                        (saved/processed*100) if processed > 0 else 0)
-            
-            time.sleep(1)  # respect API rate‑limits
+        total_saved += sym_saved
+        logging.info("  %-12s saved %d %s bars", symbol, sym_saved, args.interval)
 
-        except Exception as exc:
-            logging.error("Error fetching %s: %s", symbol, exc)
-
-    # Final summary
-    logging.info("Historical data collection completed")
-    logging.info(f"Total processed: {total_processed}")
-    logging.info(f"Total saved: {total_saved}")
-    success_rate = (total_saved / total_processed * 100) if total_processed else 0.0
-    logging.info(f"Overall success rate: {success_rate:.1f}%")
-    
-    # Generate and display collection summary
-    try:
-        summary = collector.generate_summary()
-        logging.info("Validation statistics:")
-        for key, value in summary.get('validation_stats', {}).items():
-            logging.info(f"  {key}: {value}")
-    except Exception as e:
-        logging.warning(f"Could not generate summary: {e}")
-
-    collector.close()
+    db.close()
+    logging.info("Done. Saved %d %s bars across %d symbols%s.",
+                 total_saved, args.interval, len(symbols) - len(skipped),
+                 f" ({len(skipped)} skipped: {', '.join(skipped)})" if skipped else "")
 
 
 if __name__ == "__main__":

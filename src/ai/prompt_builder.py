@@ -15,7 +15,7 @@ class PromptBuilder:
 
     Produces the single-symbol and portfolio-batch prompts and parses the JSON
     responses back into decision dicts. Used for whichever provider the
-    coordinator routes to (Groq/Gemini/Claude), not Claude specifically.
+    coordinator routes to (Groq/Gemini), provider-agnostic.
     """
     
     @staticmethod

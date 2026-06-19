@@ -11,7 +11,7 @@ logger = setup_logger(__name__, 'ai_clients.log')
 class BaseAIClient(ABC):
     """Abstract base class for AI provider API clients.
 
-    Each provider (Claude, Gemini, Groq) implements this interface to provide
+    Each provider (Gemini, Groq) implements this interface to provide
     a consistent API for making LLM calls with built-in rate limiting and
     error handling.
     """
@@ -21,7 +21,7 @@ class BaseAIClient(ABC):
 
         Args:
             api_key: API key for authentication
-            model: Model identifier (e.g., "claude-3-5-sonnet", "gemini-2.5-pro")
+            model: Model identifier (e.g., "gemini-2.5-pro", "openai/gpt-oss-120b")
             max_tokens: Default maximum tokens for responses
             temperature: Sampling temperature (0.0 to 1.0)
         """
@@ -52,7 +52,7 @@ class BaseAIClient(ABC):
 
     @abstractmethod
     def get_provider_name(self) -> str:
-        """Return provider name (e.g., 'claude', 'gemini', 'groq')."""
+        """Return provider name (e.g., 'gemini', 'groq')."""
         pass
 
     @abstractmethod

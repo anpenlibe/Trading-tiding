@@ -1,4 +1,22 @@
-"""Market data validation utilities."""
+"""Market data validation utilities.
+
+Validation + cache design (live collection path; the backtest reads the DB
+directly and bypasses both):
+
+- DataValidator.validate() checks one OHLCV bar for internal sanity (no
+  zero/negative prices, high≥low, OHLC consistency, minimum volume) and — when
+  fed the prior close via `previous_close` — a 20% price-jump circuit breaker
+  (VALIDATION_MAX_PRICE_CHANGE). That jump guard is the defense against a bad or
+  stale bar teleporting price into the indicator window; DataCollector feeds it
+  `db.get_previous_close(symbol)` on every fetch.
+- Live freshness (is the bar recent enough to trade on?) is enforced separately
+  in trading_modes.TradingSafetyValidator._is_live_data_fresh (10-minute window).
+- Missing data (weekends, holidays, staggered opens) needs no special handling:
+  the DB simply has no bars then, and the backtest's bar selection + indicator
+  warmup are gap-tolerant (cumulative spacing, N-bar lookback by count).
+- MemoryCache (src/data/cache.py, 5-min TTL) short-circuits repeat fetches of the
+  same symbol within a collection cycle; it is live-path only.
+"""
 
 from typing import Tuple, Optional, Dict
 from collections import defaultdict

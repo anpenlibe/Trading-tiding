@@ -4,10 +4,10 @@
 decision, risk, and execution layers. The ``Base*`` ABCs define the contracts
 each layer's concrete classes implement:
 
-    ZerodhaAPI / YahooFinanceAPI / MockAPI -> BaseMarketDataAPI
-    AIBrain                                -> BaseDecisionModel
-    SimpleRiskManager                      -> BaseRiskManager
-    PaperTrader                            -> BaseTradingExecutor
+    ZerodhaAPI        -> BaseMarketDataAPI
+    AIBrain           -> BaseDecisionModel
+    SimpleRiskManager -> BaseRiskManager
+    PaperTrader       -> BaseTradingExecutor
 """
 
 from abc import ABC, abstractmethod
@@ -45,7 +45,7 @@ class MarketData:
 
 
 class BaseMarketDataAPI(ABC):
-    """Contract for a market-data source (Zerodha, Yahoo, Mock)."""
+    """Contract for a market-data source (Zerodha)."""
 
     @abstractmethod
     def __init__(self, **kwargs):

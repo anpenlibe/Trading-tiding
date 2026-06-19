@@ -24,33 +24,45 @@ IS_DEVELOPMENT = ENVIRONMENT == "development"
 logger.info("Environment: %s", ENVIRONMENT.upper())
 
 # API Keys
-ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY")
-GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY")        # For Gemini auditor
-GROQ_API_KEY        = os.getenv("GROQ_API_KEY")          # For Groq ultra-fast inference
+GEMINI_API_KEY      = os.getenv("GEMINI_API_KEY")        # singular; pool is GEMINI_API_KEY_1..N
+GROQ_API_KEY        = os.getenv("GROQ_API_KEY")          # singular; pool is GROQ_API_KEY_1..N
 ZERODHA_API_KEY     = os.getenv("ZERODHA_API_KEY")
 ZERODHA_API_SECRET  = os.getenv("ZERODHA_API_SECRET")
 ZERODHA_ACCESS_TOKEN= os.getenv("ZERODHA_ACCESS_TOKEN")  # Generated after login
 
-# Validate critical API keys
-# Note: At least one AI provider API key must be configured
-# AI system uses multi-provider fallback: Groq → Gemini → Claude
-has_ai_key = any([
-    ANTHROPIC_API_KEY and ANTHROPIC_API_KEY != "your-claude-api-key-here",
-    GEMINI_API_KEY and GEMINI_API_KEY != "your-gemini-api-key-here",
-    GROQ_API_KEY and GROQ_API_KEY != "your-groq-api-key-here"
-])
+# Validate critical API keys. At least one AI provider key must be configured.
+# Keys may be a single PROVIDER_API_KEY or a numbered pool (PROVIDER_API_KEY_1,
+# _2, ...) — the provider coordinator cycles the pool; here we only need to know
+# that at least one real (non-placeholder) key exists.
+_PLACEHOLDERS = (
+    "", "your-claude-api-key-here", "your-gemini-api-key-here",
+    "your-groq-api-key-here", "your-zerodha-api-key-here",
+)
+
+def _has_provider_key(prefix: str) -> bool:
+    names = [f"{prefix}_API_KEY"] + [f"{prefix}_API_KEY_{i}" for i in range(1, 11)]
+    for n in names:
+        val = (os.getenv(n) or "").strip()
+        if val and val not in _PLACEHOLDERS:
+            return True
+    return False
+
+has_ai_key = any(_has_provider_key(p) for p in ("GEMINI", "GROQ"))
 if not has_ai_key:
-    raise ValueError("Please set at least one AI API key (ANTHROPIC_API_KEY, GEMINI_API_KEY, or GROQ_API_KEY) in .env file")
+    raise ValueError(
+        "Please set at least one AI API key (GROQ_API_KEY/_1.. or "
+        "GEMINI_API_KEY/_1..) in the .env file"
+    )
 
 if not ZERODHA_API_KEY or ZERODHA_API_KEY == "your-zerodha-api-key-here":
-    logger.warning("ZERODHA_API_KEY not configured - using mock data")
+    logger.warning("ZERODHA_API_KEY not configured - live/paper collection will fail (backtests still work)")
 
-# Log configured APIs
+# Log configured market-data APIs (Zerodha is the only source).
 configured_apis = []
 if ZERODHA_API_KEY and ZERODHA_API_KEY != "your-zerodha-api-key-here":
     configured_apis.append("Zerodha")
 
-logger.info("Configured APIs: %s", ', '.join(configured_apis) if configured_apis else 'None (using mock data)')
+logger.info("Configured market-data APIs: %s", ', '.join(configured_apis) if configured_apis else 'None (Zerodha not configured)')
 
 # Trading Parameters - UPDATED FOR ₹10,000 CAPITAL
 INITIAL_CAPITAL     = float(os.getenv("INITIAL_CAPITAL", "10000.0"))
@@ -111,9 +123,8 @@ PRE_MARKET_OPEN = "09:00"
 POST_MARKET_CLOSE = "15:45"
 
 # Data Source Configuration
-# Source selection/priority is handled by DataCollector._init_apis
-# (Zerodha → Yahoo → Mock); there is no single DATA_SOURCE switch.
-USE_MOCK_DATA= os.getenv("USE_MOCK_DATA", "false").lower() == "true"
+# Zerodha is the sole market-data source (no Yahoo/Mock fallback). Live/paper
+# collection requires a Zerodha session; backtests read the local SQLite DB.
 
 # Logging
 LOG_LEVEL      = os.getenv("LOG_LEVEL", "INFO")
@@ -129,26 +140,19 @@ LOGS_PATH = os.path.join(DATA_PATH, "logs")
 HISTORICAL_DATA_PATH = os.path.join(DATA_PATH, "historical")
 LIVE_DATA_PATH       = os.path.join(DATA_PATH, "live")
 
-# Database paths.
-# BUNDLED_DB_PATH is the read-only historical snapshot committed in the repo and
-# read by the backtester. Runtime collection (live/mock) writes to a SEPARATE DB
-# under the gitignored repo-root data/ dir, so running the trader never mutates
-# the committed snapshot. The runtime DB is seeded from the snapshot on first use
-# (see DatabaseManager) so the trader still has historical context.
-BUNDLED_DB_PATH   = os.path.join(DATA_PATH, "market_data.sqlite")          # src/data/ (committed)
+# Database path. A single SQLite DB holds all market data (historical + runtime).
+# It is generated locally via apps/data_collector.py from Zerodha and is
+# gitignored — not committed — so each user populates their own with their token.
 REPO_ROOT         = os.path.dirname(BASE_PATH)
 RUNTIME_DATA_PATH = os.path.join(REPO_ROOT, "data")
-DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")  # data/ (gitignored, runtime)
+DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")
 
 # ============= AI PROVIDER SETTINGS =============
 # The AI provider fallback chain lives in src/ai/provider_coordinator.py, which
-# owns its config via env (it reads ENABLED_AI_PROVIDERS, the *_API_KEY vars, and
-# CLAUDE_MODEL / CLAUDE_MAX_TOKENS directly). The Groq and Gemini models are FIXED
-# in the coordinator's chain — there are no GROQ_MODEL / GEMINI_MODEL knobs.
-#
-# Removed from here: AI_PROVIDER and the per-provider model/token/temperature
-# constants. They were never imported by the coordinator (which re-reads env), so
-# setting them did nothing — no-op traps rather than real configuration.
+# owns its config via env: it reads ENABLED_AI_PROVIDERS (default "groq,gemini")
+# and the numbered key pools (GROQ_API_KEY_1..N, GEMINI_API_KEY_1..N) directly.
+# The Groq and Gemini models are FIXED in the coordinator's chain — there are no
+# GROQ_MODEL / GEMINI_MODEL knobs. Claude was removed as a provider.
 
 # Risk Management
 STOP_LOSS_PERCENT     = float(os.getenv("STOP_LOSS_PERCENT", "0.015"))
@@ -161,8 +165,14 @@ EMERGENCY_TAKE_PROFIT_PCT = float(os.getenv('EMERGENCY_TAKE_PROFIT_PCT', '4.0'))
 EMERGENCY_RECHECK_PCT = float(os.getenv('EMERGENCY_RECHECK_PCT', '2.0'))  # Default ±2.0%
 
 # Paper Trading Settings
+# PAPER_TRADE_COMMISSION is a legacy flat per-trade fee, superseded by the
+# turnover-based Indian-equity charge model in src/core/transaction_costs.py.
+# Kept (default 0.0) as an optional extra fixed fee on top of computed charges.
 PAPER_TRADE_COMMISSION = float(os.getenv("PAPER_TRADE_COMMISSION", "0.0"))
 PAPER_TRADE_SLIPPAGE   = float(os.getenv("PAPER_TRADE_SLIPPAGE", "0.0005"))
+# TRADING_PRODUCT selects the charge schedule: 'delivery' (CNC, multi-day swing)
+# or 'intraday' (MIS, same-day). The AI does multi-day swing trades → delivery.
+TRADING_PRODUCT = os.getenv("TRADING_PRODUCT", "delivery").lower()
 
 # Performance Tracking
 MIN_TRADES_FOR_ANALYSIS   = 15
@@ -194,6 +204,10 @@ MACD_SIGNAL = int(os.getenv('MACD_SIGNAL', '9'))
 
 # ============= DATA COLLECTION CONFIGURATION =============
 # Data retrieval settings
+# Default candle interval the decision pipeline reads from the DB. The collector
+# stores multiple intervals side by side (e.g. '1m' intraday, '1d' daily); swing
+# decisions read daily. Readers filter price_data by this unless overridden.
+DEFAULT_DATA_INTERVAL = os.getenv('DATA_INTERVAL', '1d')
 DEFAULT_PERIODS = int(os.getenv('DEFAULT_PERIODS', '200'))
 MIN_DATA_FOR_INDICATORS = int(os.getenv('MIN_DATA_FOR_INDICATORS', '20'))
 RECENT_DATA_LOOKBACK = int(os.getenv('RECENT_DATA_LOOKBACK', '20'))
@@ -201,16 +215,6 @@ RECENT_DATA_LOOKBACK = int(os.getenv('RECENT_DATA_LOOKBACK', '20'))
 # ============= AI BRAIN CONFIGURATION =============
 # Decision making settings
 MAX_DECISION_HISTORY = int(os.getenv('MAX_DECISION_HISTORY', '100'))
-
-# ============= SIMULATION CONFIGURATION =============
-# Backtesting and simulation settings
-SIMULATION_PERIODS = int(os.getenv('SIMULATION_PERIODS', '50'))
-SIMULATION_BASE_PRICE = float(os.getenv('SIMULATION_BASE_PRICE', '2850'))
-
-# ============= DATA SOURCE CONFIGURATION =============
-# Mock data generation
-MOCK_VOLUME_RANGE_MIN = int(os.getenv('MOCK_VOLUME_RANGE_MIN', '100000'))
-MOCK_VOLUME_RANGE_MAX = int(os.getenv('MOCK_VOLUME_RANGE_MAX', '1000000'))
 
 # ============= PERFORMANCE CONFIGURATION =============
 # Analysis settings
@@ -371,20 +375,10 @@ if TEST_MODE:
         MIN_TRADE_VALUE, MAX_POSITION_SIZE * 100, MAX_RISK_PER_TRADE * 100,
     )
 
-# ============= DATA SOURCE SAFETY CONFIGURATION =============
+# ============= TRADING MODE =============
+# paper (default) | live | backtest. Mode-specific safety lives in
+# src/core/trading_modes.py. There is no mock data source to guard against —
+# Zerodha is the only source, so live mode simply requires a Zerodha session.
+TRADING_MODE = os.getenv('TRADING_MODE', 'paper')
 
-# Mock API Safety - CRITICAL for production
-ALLOW_MOCK_DATA_IN_LIVE_TRADING = False  # NEVER change this to True in production
-
-# Trading mode validation
-REQUIRE_REAL_DATA_FOR_LIVE_TRADING = True
-TRADING_MODE = os.getenv('TRADING_MODE', 'paper')  # Default to paper trading
-
-if TRADING_MODE == 'live' and not REQUIRE_REAL_DATA_FOR_LIVE_TRADING:
-    logger.warning("Live trading without real data validation - review configuration!")
-
-logger.info("Data source priority: Zerodha (1) > Yahoo Finance (2) > Mock (testing only)")
-logger.info(
-    "Mock data in live trading: %s",
-    "DISABLED" if not ALLOW_MOCK_DATA_IN_LIVE_TRADING else "ENABLED",
-)
+logger.info("Market-data source: Zerodha only | Trading mode: %s", TRADING_MODE)

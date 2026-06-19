@@ -1,9 +1,11 @@
 """Provider coordinator managing AI client fallback chain.
 
 This coordinator manages the cascading fallback between AI providers:
-Groq (gpt-oss-120b) → Groq (llama-3.3-70b) → Groq (gpt-oss-20b) → Gemini Pro → Claude → Rule-based
+Groq (gpt-oss-120b) → Groq (llama-3.3-70b) → Groq (gpt-oss-20b) → Gemini Pro → Rule-based
 
-Rate limits (per model):
+Keys come from numbered pools in .env (GROQ_API_KEY_1..N, GEMINI_API_KEY_1..N).
+
+Rate limits (per Groq model):
 - gpt-oss-120b: 8K TPM, 200K TPD (primary - best quality + capacity)
 - llama-3.3-70b: 6K TPM, 100K TPD (proven reliable)
 - gpt-oss-20b: 8K TPM, 200K TPD (fast fallback)
@@ -14,13 +16,31 @@ from typing import Dict, List, Optional, Any
 import os
 import time
 from src.ai.clients.base_client import BaseAIClient
-from src.ai.clients.claude_client import ClaudeClient
 from src.ai.clients.gemini_client import GeminiClient
 from src.ai.clients.groq_client import GroqClient
 from src.utils.logger import setup_logger
 from src.exceptions import AIAnalysisError
 
 logger = setup_logger(__name__, 'provider_coordinator.log')
+
+
+def _collect_provider_keys(prefix: str) -> List[str]:
+    """Collect API keys for a provider from the environment.
+
+    Supports a numbered pool: a singular ``PREFIX_API_KEY`` plus
+    ``PREFIX_API_KEY_1``, ``PREFIX_API_KEY_2``, ... (the live .env carries 4 Groq
+    + 4 Gemini keys this way). Returns real keys in order — singular first, then
+    numbered ascending — de-duplicated, with blanks/placeholders dropped.
+    """
+    names = [f"{prefix}_API_KEY"] + [f"{prefix}_API_KEY_{i}" for i in range(1, 11)]
+    keys: List[str] = []
+    seen = set()
+    for n in names:
+        val = (os.getenv(n) or "").strip()
+        if val and not val.startswith("your-") and val not in seen:
+            seen.add(val)
+            keys.append(val)
+    return keys
 
 
 class ProviderConfig:
@@ -31,7 +51,7 @@ class ProviderConfig:
         """Initialize provider configuration.
 
         Args:
-            provider: Provider name ('claude', 'gemini', 'groq')
+            provider: Provider name ('gemini', 'groq')
             model: Model identifier
             max_tokens: Maximum tokens for responses
             api_key: Optional API key override
@@ -92,16 +112,20 @@ class ProviderCoordinator:
 
         # Provider allowlist: a provider is added only if its API key is present
         # AND it appears in ENABLED_AI_PROVIDERS (comma-separated, default all).
-        # e.g. set ENABLED_AI_PROVIDERS=groq,gemini to disable Claude.
+        # e.g. set ENABLED_AI_PROVIDERS=groq to disable Gemini.
         enabled = {
             p.strip().lower()
-            for p in os.getenv("ENABLED_AI_PROVIDERS", "groq,gemini,claude").split(",")
+            for p in os.getenv("ENABLED_AI_PROVIDERS", "groq,gemini").split(",")
             if p.strip()
         }
 
-        # Groq models (each has independent rate limits per model)
-        groq_key = os.getenv("GROQ_API_KEY")
-        if groq_key and "groq" in enabled:
+        # Groq models (each has independent rate limits per model). Keys come
+        # from a numbered pool in .env (GROQ_API_KEY_1..N). Phase 1 uses the first
+        # available key — full per-call cycling across the pool is a later phase.
+        # Without this, the absent singular GROQ_API_KEY silently dropped Groq.
+        groq_keys = _collect_provider_keys("GROQ")
+        if groq_keys and "groq" in enabled:
+            groq_key = groq_keys[0]
             # Primary: gpt-oss-120b - best quality, native JSON, 8K TPM / 200K TPD
             chain.append(ProviderConfig(
                 provider="groq",
@@ -129,24 +153,15 @@ class ProviderCoordinator:
             # Note: llama-3.1-8b-instant available for pipeline testing (fast, low token usage)
             # Not included in production - 3 Groq models provide sufficient coverage
 
-        # Gemini Pro (reliable but slower)
-        gemini_key = os.getenv("GEMINI_API_KEY")
-        if gemini_key and "gemini" in enabled:
+        # Gemini Pro (reliable but slower). Same numbered-pool handling as Groq.
+        gemini_keys = _collect_provider_keys("GEMINI")
+        if gemini_keys and "gemini" in enabled:
+            gemini_key = gemini_keys[0]
             chain.append(ProviderConfig(
                 provider="gemini",
                 model="gemini-2.5-pro",
                 max_tokens=16000,
                 api_key=gemini_key
-            ))
-
-        # Claude (premium option if configured)
-        claude_key = os.getenv("ANTHROPIC_API_KEY")
-        if claude_key and "claude" in enabled:
-            chain.append(ProviderConfig(
-                provider="claude",
-                model=os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022"),
-                max_tokens=int(os.getenv("CLAUDE_MAX_TOKENS", "8000")),
-                api_key=claude_key
             ))
 
         if not chain:
@@ -172,14 +187,7 @@ class ProviderCoordinator:
         # Create new client
         logger.debug(f"Creating new client for {key}")
 
-        if config.provider == "claude":
-            client = ClaudeClient(
-                api_key=config.api_key,
-                model=config.model,
-                max_tokens=config.max_tokens,
-                temperature=self.temperature
-            )
-        elif config.provider == "gemini":
+        if config.provider == "gemini":
             client = GeminiClient(
                 api_key=config.api_key,
                 model=config.model,

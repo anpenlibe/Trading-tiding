@@ -7,7 +7,7 @@ from collections import defaultdict
 from src.data.cache import MemoryCache
 from src.data.validator import DataValidator
 from src.data.database import DatabaseManager
-from src.data.data_sources import ZerodhaAPI, YahooFinanceAPI, MockAPI
+from src.data.data_sources import ZerodhaAPI
 from src.core.indicator_engine import calculate_all_indicators
 from src.interfaces import BaseMarketDataAPI, MarketData
 from src.data.config import SYMBOLS, CACHE_TTL_SECONDS, DB_PATH, MIN_DATA_FOR_INDICATORS
@@ -67,60 +67,28 @@ class DataCollector:
             raise DatabaseError(f"Database initialization failed: {e}")
     
     def _init_apis(self) -> List[BaseMarketDataAPI]:
-        """Initialize data sources in priority order: Zerodha → Yahoo → (mock)."""
+        """Initialize the live data source. Zerodha is the SOLE source — there is
+        no Yahoo or synthetic Mock fallback. If Zerodha isn't authenticated we
+        fail loud rather than fabricate data; backtests read the local DB and
+        never reach this path."""
         apis: List[BaseMarketDataAPI] = []
-        live_apis = []  # real/live sources only (mock excluded)
 
-        def _register(api):
-            apis.append(api)
-            live_apis.append(api)
-            self.api_circuit_breakers[api.__class__.__name__] = CircuitBreaker(
-                failure_threshold=3, recovery_timeout=300  # 5 minutes
-            )
-            logger.info(f"Initialized {api.__class__.__name__}")
-
-        # Priority 1: Zerodha (authenticated live data).
         try:
             zerodha = ZerodhaAPI()
             if zerodha.is_available():
-                _register(zerodha)
+                apis.append(zerodha)
+                self.api_circuit_breakers['ZerodhaAPI'] = CircuitBreaker(
+                    failure_threshold=3, recovery_timeout=300  # 5 minutes
+                )
+                logger.info("Initialized ZerodhaAPI")
         except Exception as e:
             logger.warning(f"Failed to initialize ZerodhaAPI: {e}")
 
-        # Priority 2: Yahoo Finance (real backup). Include whenever yfinance is
-        # importable; per-fetch availability/rate-limiting is handled internally,
-        # so we avoid a network probe on every startup.
-        try:
-            yahoo = YahooFinanceAPI()
-            if getattr(yahoo, "yf", None) is not None:
-                _register(yahoo)
-        except Exception as e:
-            logger.warning(f"Failed to initialize YahooFinanceAPI: {e}")
-
-        # Live trading requires a real source; mock is NEVER allowed.
-        if self.safety_config.mode.value == 'live':
-            if not live_apis:
-                error_msg = (
-                    "🚨 No live data source available for LIVE trading. Configure Zerodha "
-                    "(or ensure Yahoo Finance is reachable), or switch to paper trading."
-                )
-                logger.critical(error_msg)
-                raise TradingSystemError(error_msg)
-            return apis
-
-        # Paper / backtest: add Mock as a guaranteed last-resort fallback so a real
-        # source that authenticates but then fails to fetch can't dead-end a cycle.
-        if self.safety_config.allow_mock_fallback:
-            apis.append(MockAPI())
-            self.api_circuit_breakers['MockAPI'] = CircuitBreaker()
-            if not live_apis:
-                logger.warning(
-                    f"No live APIs available; using mock data in {self.safety_config.mode.value} mode"
-                )
-        elif not apis:
+        if not apis:
             error_msg = (
-                f"🚨 No live data source in {self.safety_config.mode.value} mode and mock "
-                "fallback is disabled. Configure a live data source before trading."
+                "🚨 No live data source available. Configure Zerodha (ZERODHA_API_KEY "
+                "+ a fresh ZERODHA_ACCESS_TOKEN) to collect live data. Backtests read "
+                "the local DB and don't need a live source."
             )
             logger.critical(error_msg)
             raise TradingSystemError(error_msg)
@@ -160,10 +128,10 @@ class DataCollector:
 
                     # Use circuit breaker if available. Route through a wrapper
                     # that raises on an empty result so a persistently-failing
-                    # source (e.g. expired-token Zerodha, rate-limited Yahoo —
-                    # both return None rather than raising) actually trips its
-                    # breaker after a few misses and is then skipped fast, instead
-                    # of being re-probed (~seconds each) for every symbol.
+                    # source (e.g. expired-token Zerodha, which returns None
+                    # rather than raising) actually trips its breaker after a few
+                    # misses and is then skipped fast, instead of being re-probed
+                    # (~seconds each) for every symbol.
                     if circuit_breaker:
                         market_data = circuit_breaker.call(self._fetch_or_raise, api, symbol)
                     else:
@@ -173,8 +141,8 @@ class DataCollector:
                             continue
                     
                     # Validate data, feeding the previous close so the price-jump
-                    # circuit breaker can fire on a discontinuity (e.g. a stale
-                    # mock bar that teleports price into the indicator window).
+                    # circuit breaker can fire on a discontinuity (e.g. a stale or
+                    # bad bar that teleports price into the indicator window).
                     previous_close = self.db.get_previous_close(symbol)
                     is_valid, error = self.validator.validate(market_data, previous_close)
                     if not is_valid:
@@ -313,7 +281,7 @@ class DataCollector:
 
 # Factory functions for safe DataCollector creation
 def create_paper_trading_collector() -> DataCollector:
-    """Create DataCollector for paper trading (allows mock data)."""
+    """Create DataCollector for paper trading (paper-mode safety config)."""
     from src.core.trading_modes import PAPER_TRADING_CONFIG
     return DataCollector(safety_config=PAPER_TRADING_CONFIG)
 

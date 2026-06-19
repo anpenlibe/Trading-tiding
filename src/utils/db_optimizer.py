@@ -103,8 +103,14 @@ class DatabaseOptimizer:
         logger.info(f"Vacuum complete. Saved {result['space_saved_mb']:.2f} MB")
         return result
     
-    def cleanup_old_data(self, days_to_keep: int = 90) -> int:
-        """Remove data older than the retention window from the time-series tables.
+    def cleanup_old_data(self, days_to_keep: int = 90,
+                         prune_intervals=('1m', '5m', '15m', '30m')) -> int:
+        """Prune only the voluminous *intraday* price_data older than the window.
+
+        Daily ('1d') bars are kept indefinitely — they're cheap and needed for
+        long-horizon indicators (e.g. a 200-day SMA needs ~10 months), so a
+        blanket cutoff would destroy exactly the history we collect them for.
+        Intraday intervals (1m/5m/...) age out past ``days_to_keep``.
 
         Returns the number of price_data rows removed.
         """
@@ -112,16 +118,25 @@ class DatabaseOptimizer:
         # stored format). Passing a datetime relied on sqlite3's default adapter,
         # deprecated in 3.12 and removed in later versions.
         cutoff = (datetime.now() - timedelta(days=days_to_keep)).strftime('%Y-%m-%d %H:%M:%S')
+        placeholders = ','.join('?' for _ in prune_intervals)
 
         records_to_delete = self.conn.execute(
-            "SELECT COUNT(*) as cnt FROM price_data WHERE timestamp < ?", (cutoff,)
+            f"SELECT COUNT(*) as cnt FROM price_data "
+            f"WHERE timestamp < ? AND interval IN ({placeholders})",
+            (cutoff, *prune_intervals),
         ).fetchone()['cnt']
 
         if records_to_delete > 0:
-            for table in ('price_data', 'indicators', 'data_quality_log'):
+            self.conn.execute(
+                f"DELETE FROM price_data WHERE timestamp < ? AND interval IN ({placeholders})",
+                (cutoff, *prune_intervals),
+            )
+            # indicators / data_quality_log have no interval column and are not
+            # long-history assets, so prune them by timestamp as before.
+            for table in ('indicators', 'data_quality_log'):
                 self.conn.execute(f"DELETE FROM {table} WHERE timestamp < ?", (cutoff,))
             self.conn.commit()
-            logger.info(f"Cleaned up {records_to_delete} old records")
+            logger.info(f"Cleaned up {records_to_delete} old intraday records (kept daily)")
 
         return records_to_delete
     

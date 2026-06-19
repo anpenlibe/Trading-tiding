@@ -55,9 +55,9 @@ __pycache__/
 backtest_results/
 live_trades/
 
-# Published market dataset (historical OHLCV used by the backtester).
-# Exception to the *.sqlite rule above; this is public market data, not secrets.
-!src/data/market_data.sqlite
+# Market data DB is generated locally via apps/data_collector.py (Zerodha) and
+# is intentionally NOT committed — each user populates their own. Covered by the
+# *.sqlite rule above; no commit exception.
 
 instruments.csv
 

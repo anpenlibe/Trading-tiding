@@ -5,11 +5,10 @@ python-dotenv==1.0.1
 pytz==2024.1
 
 # AI Integration
-anthropic==0.37.1
+# Groq and Gemini are called over REST via `requests` (no provider SDK).
 
 # Market Data APIs
 kiteconnect==5.0.1
-yfinance==0.2.38
 requests==2.31.0
 
 # Technical Analysis

@@ -31,17 +31,28 @@ def calculate_sma(data: pd.Series, period: int) -> Optional[float]:
 
 
 def calculate_rsi(data: pd.Series, period: int = RSI_PERIOD) -> Optional[float]:
-    """Relative Strength Index over `period`, or None if too few points."""
+    """Relative Strength Index over `period` using Wilder's smoothing, or None
+    if too few points.
+
+    Wilder smooths average gain/loss with an EMA of alpha=1/period — the standard
+    used by TradingView and most TA libraries. The previous simple-rolling-mean
+    ("Cutler's RSI") variant ran several points hotter (e.g. 79.8 vs a standard
+    71 on the same data), which miscalibrated the conventional 70/30 thresholds.
+    """
     if len(data) < period + 1:
         return None
 
     delta = data.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-    rs = gain / loss
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    return float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None
+    last = rsi.iloc[-1]
+    return float(last) if not np.isnan(last) else None
 
 
 def calculate_macd(data: pd.Series, fast: int = MACD_FAST, slow: int = MACD_SLOW,

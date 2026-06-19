@@ -1,8 +1,8 @@
 """Trading-mode safety system.
 
-Prevents unsafe data sources per mode — chiefly, mock data must never reach live
-trading. The mode (PAPER/LIVE/BACKTEST) is authoritative: TradingSafetyConfig's
-__post_init__ derives the safety flags from it, overriding any passed in.
+Enforces that live trading runs only on a verified live source. The mode
+(PAPER/LIVE/BACKTEST) is authoritative: TradingSafetyConfig's __post_init__
+derives the safety flags from it, overriding any passed in.
 """
 
 from enum import Enum
@@ -27,22 +27,18 @@ class TradingSafetyConfig:
     """Configuration for trading safety checks"""
     mode: TradingMode
     require_live_data: bool = False
-    allow_mock_fallback: bool = True
     require_user_confirmation: bool = False
-    
+
     def __post_init__(self):
         """Set safety defaults based on trading mode"""
         if self.mode == TradingMode.LIVE:
             self.require_live_data = True
-            self.allow_mock_fallback = False
             self.require_user_confirmation = True
         elif self.mode == TradingMode.PAPER:
             self.require_live_data = False
-            self.allow_mock_fallback = True
             self.require_user_confirmation = False
         elif self.mode == TradingMode.BACKTEST:
             self.require_live_data = False
-            self.allow_mock_fallback = False  # Should use historical data
             self.require_user_confirmation = False
 
 
@@ -70,38 +66,25 @@ class TradingSafetyValidator:
             raise TradingSystemError("No market data provided for validation")
         
         data_source = market_data.source.lower()
-        
-        # CRITICAL: Live trading mode validation
+
+        # CRITICAL: live trading must run on a verified live source. (Mock no
+        # longer exists, but this still rejects any non-live source string.)
         if self.config.mode == TradingMode.LIVE:
-            if data_source == "mock":
-                raise TradingSystemError(
-                    "🚨 SAFETY VIOLATION: Cannot use MOCK data in LIVE trading mode! "
-                    "This would result in trading real money on fake market data."
-                )
-            
             if data_source not in ["zerodha", "live"]:
                 raise TradingSystemError(
-                    f"🚨 SAFETY VIOLATION: Live trading requires verified live data source. "
-                    f"Got: {data_source}. Expected: 'zerodha' or 'live'"
+                    f"🚨 SAFETY VIOLATION: Live trading requires a verified live data "
+                    f"source. Got: {data_source}. Expected: 'zerodha' or 'live'"
                 )
-            
-            # Additional validation for live mode
             if not self._is_live_data_fresh(market_data):
                 logger.warning(f"Live data may be stale: {market_data.timestamp}")
-        
-        # Paper trading mode - allow mock data
+
         elif self.config.mode == TradingMode.PAPER:
-            # Paper trading can use any data source
-            if data_source == "mock":
-                logger.debug("Using mock data for paper trading (safe)")
-            else:
-                logger.debug(f"Using {data_source} data for paper trading")
-        
-        # Backtest mode - should use historical data
+            logger.debug(f"Using {data_source} data for paper trading")
+
         elif self.config.mode == TradingMode.BACKTEST:
-            if data_source not in ["historical", "simulation_zerodha", "simulation_mock"]:
+            if not (data_source.startswith("historical") or data_source.startswith("simulation")):
                 logger.warning(f"Backtest using non-historical data: {data_source}")
-        
+
         return True
     
     def _is_live_data_fresh(self, market_data: MarketData) -> bool:
@@ -151,7 +134,7 @@ class TradingSafetyValidator:
         print("• No guarantee of profits")
         print()
         print("SAFEGUARDS ENABLED:")
-        print("• Mock data fallback DISABLED")
+        print("• Only verified live (Zerodha) data accepted")
         print("• Live data source validation ENABLED")
         print("• Position size limits ACTIVE")
         print("• Stop loss protection ACTIVE")

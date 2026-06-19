@@ -2,7 +2,7 @@
 """Historical backtester.
 
 Replays the live trading pipeline (AIBrain → SimpleRiskManager → PaperTrader)
-over the bundled OHLCV snapshot, sampling decision points at a configurable
+over the local OHLCV database, sampling decision points at a configurable
 interval, to test strategies under simulated real-time conditions.
 """
 
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.config import SYMBOLS, BUNDLED_DB_PATH, INITIAL_CAPITAL
+from src.data.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL, DEFAULT_DATA_INTERVAL, DEFAULT_PERIODS
 from src.core.indicator_engine import calculate_all_indicators
 from src.interfaces import MarketData
 from src.utils.logger import setup_logger
@@ -39,70 +39,84 @@ class SimulationConfig:
     simulation_interval_minutes: int = 30  # Minutes between simulation points
     enable_ai_brain: bool = True
     enable_paper_trading: bool = True
+    interval: str = DEFAULT_DATA_INTERVAL  # which price_data interval to replay
 
 
 class HistoricalDataProvider:
     """Provides historical data in chronological order"""
     
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, interval: str = DEFAULT_DATA_INTERVAL):
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
-        logger.info("Historical data provider initialized")
-    
+        self.interval = interval
+        logger.info(f"Historical data provider initialized (interval={interval})")
+
     def get_data_range(self, symbols: List[str]) -> Tuple[str, str]:
         """Get the available date range for symbols"""
         placeholders = ','.join(['?' for _ in symbols])
         query = f'''
-            SELECT 
+            SELECT
                 MIN(DATE(timestamp)) as start_date,
                 MAX(DATE(timestamp)) as end_date,
                 COUNT(*) as total_records
-            FROM price_data 
-            WHERE symbol IN ({placeholders})
+            FROM price_data
+            WHERE symbol IN ({placeholders}) AND interval = ?
         '''
-        
-        result = self.conn.execute(query, symbols).fetchone()
+
+        result = self.conn.execute(query, symbols + [self.interval]).fetchone()
         logger.info(f"Available data: {result['start_date']} to {result['end_date']} ({result['total_records']} records)")
         return result['start_date'], result['end_date']
     
-    def get_simulation_data(self, config: SimulationConfig) -> pd.DataFrame:
-        """Get all data for simulation period including previous trading day context"""
+    def get_simulation_data(self, config: SimulationConfig,
+                            warmup_bars: int = DEFAULT_PERIODS) -> pd.DataFrame:
+        """Load bars for the simulation, INCLUDING an indicator-warmup lookback.
+
+        Indicators (RSI/MACD/SMA up to 200) need history *before* the first
+        decision bar. We therefore load from `warmup_bars` bars of the chosen
+        interval BEFORE the window start, through the window end. Anchoring the
+        floor to an actual bar COUNT (not a fixed "previous day") is what makes
+        this interval-agnostic: a 1-day prior window holds ~1 daily bar but ~375
+        one-minute bars, so the old previous-day approach starved daily runs to a
+        single bar and produced zero decisions.
+        """
         placeholders = ','.join(['?' for _ in config.symbols])
 
-        # Find the last trading day before simulation start date for historical context
-        # Query to find the most recent trading day before our simulation date
-        last_trading_day_query = f'''
-            SELECT MAX(date(timestamp)) as last_trading_date
-            FROM price_data
-            WHERE symbol IN ({placeholders})
-            AND date(timestamp) < ?
+        # Floor = timestamp of the bar `warmup_bars` rows before the window start
+        # (across the symbols' shared calendar). Falls back to the window start.
+        warmup_query = f'''
+            SELECT MIN(ts) AS floor_ts FROM (
+                SELECT DISTINCT timestamp AS ts
+                FROM price_data
+                WHERE symbol IN ({placeholders})
+                    AND interval = ?
+                    AND timestamp < ?
+                ORDER BY ts DESC
+                LIMIT ?
+            )
         '''
+        warmup_params = config.symbols + [self.interval, config.start_date, warmup_bars]
+        row = self.conn.execute(warmup_query, warmup_params).fetchone()
 
-        # Get the last trading day
-        last_trading_params = config.symbols + [config.start_date]
-        result = self.conn.execute(last_trading_day_query, last_trading_params).fetchone()
-
-        if result and result['last_trading_date']:
-            # Use the last trading day as our data start
-            actual_start_date = result['last_trading_date']
-            logger.info(f"Including historical context from last trading day: {actual_start_date}")
+        if row and row['floor_ts']:
+            actual_start_date = row['floor_ts']
+            logger.info(f"Indicator warmup: loading from {actual_start_date} "
+                        f"(up to {warmup_bars} {self.interval} bars before window)")
         else:
-            # Fallback: go back 7 days to ensure we capture previous trading day even with weekends/holidays
-            start_date = pd.Timestamp(config.start_date) - pd.Timedelta(days=7)
-            actual_start_date = start_date.strftime('%Y-%m-%d')
-            logger.warning(f"Could not find last trading day, using fallback: {actual_start_date}")
+            actual_start_date = config.start_date
+            logger.warning(f"No pre-window history for warmup; starting at window {actual_start_date}")
 
         query = f'''
             SELECT
                 symbol, timestamp, open, high, low, close, volume, source
             FROM price_data
             WHERE symbol IN ({placeholders})
+                AND interval = ?
                 AND timestamp >= ?
                 AND timestamp <= ?
             ORDER BY timestamp ASC
         '''
 
-        params = config.symbols + [actual_start_date, config.end_date + ' 23:59:59']
+        params = config.symbols + [self.interval, actual_start_date, config.end_date + ' 23:59:59']
         df = pd.read_sql_query(query, self.conn, params=params)
         
         if df.empty:
@@ -160,23 +174,20 @@ class SimulationDataCollector:
             source=f"simulation_{row['source']}"
         )
     
-    def get_historical_data_for_indicators(self, symbol: str, periods: int = 200) -> pd.DataFrame:
-        """Get historical data for indicator calculation including previous day context"""
+    def get_historical_data_for_indicators(self, symbol: str, periods: int = DEFAULT_PERIODS) -> pd.DataFrame:
+        """Return up to `periods` bars for `symbol` at/just-before the current sim
+        time, oldest-first. simulation_data already carries a warmup lookback (see
+        get_simulation_data), so this just tails the history — interval-agnostic,
+        unlike the old 'previous day 09:15' window that yielded a single bar on
+        daily data and skipped every symbol as 'insufficient data'."""
         if self.current_time is None:
             return pd.DataFrame()
 
-        # Calculate previous day start (include data from previous trading day)
-        current_date = self.current_time.date()
-        previous_day_start = pd.Timestamp(current_date) - pd.Timedelta(days=1)
-        previous_day_start = previous_day_start.replace(hour=9, minute=15)  # Previous day market start
-
-        # Get data from previous day onwards, up to current time
         symbol_data = self.historical_data[
             (self.historical_data['symbol'] == symbol) &
-            (self.historical_data['timestamp'] >= previous_day_start) &
             (self.historical_data['timestamp'] <= self.current_time)
         ].tail(periods)
-        
+
         if symbol_data.empty:
             return pd.DataFrame()
 
@@ -247,7 +258,7 @@ class HistoricalSimulator:
     
     def __init__(self, config: SimulationConfig):
         self.config = config
-        self.data_provider = HistoricalDataProvider(BUNDLED_DB_PATH)
+        self.data_provider = HistoricalDataProvider(DB_PATH, config.interval)
         self.simulation_data = None
         self.data_collector = None
         self.current_time = None
@@ -300,20 +311,10 @@ class HistoricalSimulator:
         """Initialize AI brain and paper trader if enabled"""
         try:
             if self.config.enable_ai_brain:
-                # Use AIBrain with multi-provider fallback
+                # Use AIBrain with multi-provider fallback (Groq → Gemini → rule-based).
                 from src.core.ai_brain import AIBrain
-
-                # Set AI provider and model from config
-                if hasattr(self.config, 'ai_provider'):
-                    os.environ['AI_PROVIDER'] = self.config.ai_provider
-                if hasattr(self.config, 'ai_model'):
-                    if self.config.ai_provider == 'gemini':
-                        os.environ['GEMINI_MODEL'] = self.config.ai_model
-                    elif self.config.ai_provider == 'claude':
-                        os.environ['CLAUDE_MODEL'] = self.config.ai_model
-
                 self.ai_brain = AIBrain()
-                logger.info(f"AI Brain initialized - Provider: {self.config.ai_provider if hasattr(self.config, 'ai_provider') else 'default'}, Model: {self.config.ai_model if hasattr(self.config, 'ai_model') else 'default'}")
+                logger.info("AI Brain initialized (provider chain from coordinator)")
         except ImportError as e:
             logger.warning(f"AI Brain not available - continuing without AI decisions: {e}")
             self.config.enable_ai_brain = False
@@ -685,6 +686,8 @@ def build_arg_parser():
     parser.add_argument('--days', type=int, default=3, help='Days to simulate, ending at the last available date (default: 3)')
     parser.add_argument('--symbols', nargs='+', help='Symbols to simulate (default: all configured)')
     parser.add_argument('--speed', type=float, default=5.0, help='Speed multiplier; >=100 skips the inter-tick sleep (default: 5.0)')
+    parser.add_argument('--interval', choices=['1m', '5m', '15m', '30m', '1d'], default=DEFAULT_DATA_INTERVAL,
+                        help=f'Candle interval to replay from the DB (default: {DEFAULT_DATA_INTERVAL})')
     parser.add_argument('--sim-interval', type=int, default=30, help='Minutes between decision points (default: 30)')
     parser.add_argument('--interval-days', type=int, help='Days between decision points (overrides --sim-interval; e.g. 3)')
     parser.add_argument('--start-date', type=str, help='Explicit window start (YYYY-MM-DD)')
@@ -770,7 +773,7 @@ def main():
     print("=" * 60)
 
     symbols = args.symbols or SYMBOLS
-    provider = HistoricalDataProvider(BUNDLED_DB_PATH)
+    provider = HistoricalDataProvider(DB_PATH, args.interval)
     available_start, available_end = provider.get_data_range(symbols)
     provider.close()
 
@@ -789,6 +792,7 @@ def main():
         initial_capital=INITIAL_CAPITAL,
         speed_multiplier=speed,
         simulation_interval_minutes=resolve_interval_minutes(args),
+        interval=args.interval,
     )
 
     if interactive:

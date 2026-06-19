@@ -18,9 +18,10 @@ import pandas as pd
 
 from src.interfaces import BaseTradingExecutor
 from src.data.config import (
-    INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
+    INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE, TRADING_PRODUCT,
     EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 )
+from src.core.transaction_costs import compute_charges
 from src.utils.logger import setup_logger
 from src.monitoring.performance import performance_tracker
 
@@ -221,9 +222,11 @@ class PaperTrader(BaseTradingExecutor):
                 "reason": "Already have open position in this symbol"
             }
         
-        # Calculate costs
+        # Calculate costs. Charges are levied on the actual fill turnover
+        # (price already includes slippage); PAPER_TRADE_COMMISSION is an
+        # optional extra flat fee (default 0).
         position_value = quantity * price
-        commission = PAPER_TRADE_COMMISSION
+        commission = compute_charges(position_value, "BUY", TRADING_PRODUCT) + PAPER_TRADE_COMMISSION
         total_cost = position_value + commission
         
         # Check capital
@@ -312,9 +315,10 @@ class PaperTrader(BaseTradingExecutor):
         # with the stop-loss / target auto-closes.
         quantity = position.quantity
         
-        # Calculate proceeds and P&L
+        # Calculate proceeds and P&L. Sell-side charges differ from buy-side
+        # (delivery STT both sides, DP charge on delivery sells, no stamp duty).
         gross_proceeds = quantity * price
-        commission = PAPER_TRADE_COMMISSION
+        commission = compute_charges(gross_proceeds, "SELL", TRADING_PRODUCT) + PAPER_TRADE_COMMISSION
         net_proceeds = gross_proceeds - commission
         
         # Calculate P&L

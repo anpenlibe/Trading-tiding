@@ -1,14 +1,13 @@
 """Database management for market data."""
 
 import os
-import shutil
 import sqlite3
 import pandas as pd
 from datetime import datetime
 from typing import Optional, Dict, Any
 
 from src.interfaces import MarketData
-from src.data.config import DB_PATH, BUNDLED_DB_PATH, DEFAULT_PERIODS
+from src.data.config import DB_PATH, DEFAULT_PERIODS, DEFAULT_DATA_INTERVAL
 from src.utils.logger import setup_logger
 
 logger = setup_logger(__name__, 'database.log')
@@ -21,22 +20,8 @@ class DatabaseManager:
         """Initialize database connection."""
         self.db_path = db_path
         self.conn = None
-        self._seed_from_bundled()
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         self._init_database()
-
-    def _seed_from_bundled(self):
-        """Seed a fresh runtime DB from the committed snapshot.
-
-        Lets the trader start with historical context while keeping all live/mock
-        writes out of the version-controlled snapshot. No-op when opening the
-        bundled snapshot itself or when the runtime DB already exists.
-        """
-        if (self.db_path != BUNDLED_DB_PATH
-                and not os.path.exists(self.db_path)
-                and os.path.exists(BUNDLED_DB_PATH)):
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-            shutil.copy2(BUNDLED_DB_PATH, self.db_path)
-            logger.info(f"Seeded runtime DB from bundled snapshot -> {self.db_path}")
 
     def _init_database(self):
         """Open the connection, set pragmas, and create tables."""
@@ -53,11 +38,15 @@ class DatabaseManager:
 
     def _create_tables(self):
         """Create required database tables and indexes."""
+        # Migrate any pre-interval price_data before (re)creating the table.
+        self._migrate_price_data_schema()
+
         self.conn.execute('''
             CREATE TABLE IF NOT EXISTS price_data (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 timestamp DATETIME NOT NULL,
+                interval TEXT NOT NULL DEFAULT '1d',
                 open REAL NOT NULL,
                 high REAL NOT NULL,
                 low REAL NOT NULL,
@@ -65,7 +54,7 @@ class DatabaseManager:
                 volume INTEGER NOT NULL,
                 source TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(symbol, timestamp)
+                UNIQUE(symbol, timestamp, interval)
             )
         ''')
 
@@ -131,7 +120,7 @@ class DatabaseManager:
         ''')
 
         for stmt in (
-            "CREATE INDEX IF NOT EXISTS idx_price_symbol_timestamp ON price_data(symbol, timestamp DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_price_symbol_interval_ts ON price_data(symbol, interval, timestamp DESC)",
             "CREATE INDEX IF NOT EXISTS idx_indicators_symbol_timestamp ON indicators(symbol, timestamp DESC)",
             "CREATE INDEX IF NOT EXISTS idx_ai_decisions_symbol_time ON ai_decisions(symbol, timestamp)",
             "CREATE INDEX IF NOT EXISTS idx_ai_decisions_signal ON ai_decisions(signal)",
@@ -141,6 +130,29 @@ class DatabaseManager:
             self.conn.execute(stmt)
 
         self.conn.commit()
+
+    def _migrate_price_data_schema(self):
+        """Drop a pre-interval price_data table so it can be recreated with the
+        interval column + UNIQUE(symbol, timestamp, interval).
+
+        The old schema keyed UNIQUE(symbol, timestamp) and held a single interval
+        (5m), which collides once multiple intervals share the table. The legacy
+        rows are disposable (re-downloaded), so we drop rather than backfill.
+        """
+        exists = self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='price_data'"
+        ).fetchone()
+        if not exists:
+            return
+        cols = [r['name'] for r in self.conn.execute("PRAGMA table_info(price_data)")]
+        if 'interval' not in cols:
+            n = self.conn.execute("SELECT COUNT(*) FROM price_data").fetchone()[0]
+            logger.warning(
+                "Migrating price_data to interval-aware schema: dropping %d legacy "
+                "single-interval rows (re-download via apps/data_collector.py)", n,
+            )
+            self.conn.execute("DROP TABLE price_data")
+            self.conn.commit()
 
     @staticmethod
     def _to_timestamp_str(timestamp) -> str:
@@ -164,15 +176,15 @@ class DatabaseManager:
             return timestamp
         return str(timestamp)
 
-    def save_market_data(self, data: MarketData) -> bool:
-        """Insert or replace one OHLCV bar."""
+    def save_market_data(self, data: MarketData, interval: str = DEFAULT_DATA_INTERVAL) -> bool:
+        """Insert or replace one OHLCV bar for the given interval."""
         try:
             self.conn.execute('''
                 INSERT OR REPLACE INTO price_data
-                (symbol, timestamp, open, high, low, close, volume, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (symbol, timestamp, interval, open, high, low, close, volume, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                data.symbol, self._to_timestamp_str(data.timestamp),
+                data.symbol, self._to_timestamp_str(data.timestamp), interval,
                 data.open, data.high, data.low, data.close, data.volume,
                 getattr(data, 'source', 'unknown'),
             ))
@@ -181,6 +193,31 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Failed to save market data for {data.symbol}: {e}")
             return False
+
+    def save_bars_bulk(self, bars, interval: str, source: str = 'zerodha_historical') -> int:
+        """Bulk insert-or-replace OHLCV bars for one interval in a single commit.
+
+        ``bars`` is an iterable of dicts/rows with keys
+        ``symbol, date|timestamp, open, high, low, close, volume``. Used by the
+        historical collector: one executemany per chunk instead of a per-bar
+        SELECT + indicator recompute (orders of magnitude faster for ~1M rows).
+        """
+        rows = [
+            (
+                b['symbol'], self._to_timestamp_str(b.get('timestamp', b.get('date'))), interval,
+                b['open'], b['high'], b['low'], b['close'], int(b['volume']), source,
+            )
+            for b in bars
+        ]
+        if not rows:
+            return 0
+        self.conn.executemany('''
+            INSERT OR REPLACE INTO price_data
+            (symbol, timestamp, interval, open, high, low, close, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', rows)
+        self.conn.commit()
+        return len(rows)
 
     def save_indicators(self, symbol: str, timestamp: datetime, indicators: Dict[str, float]) -> bool:
         """Insert or replace the indicator row for a symbol at a timestamp."""
@@ -203,31 +240,33 @@ class DatabaseManager:
             logger.error(f"Failed to save indicators for {symbol}: {e}")
             return False
 
-    def get_recent_data(self, symbol: str, periods: int = DEFAULT_PERIODS) -> pd.DataFrame:
-        """Get the most recent `periods` bars for a symbol, oldest-first."""
+    def get_recent_data(self, symbol: str, periods: int = DEFAULT_PERIODS,
+                        interval: str = DEFAULT_DATA_INTERVAL) -> pd.DataFrame:
+        """Get the most recent `periods` bars for a symbol/interval, oldest-first."""
         query = '''
             SELECT timestamp, open, high, low, close, volume
             FROM price_data
-            WHERE symbol = ?
+            WHERE symbol = ? AND interval = ?
             ORDER BY timestamp DESC
             LIMIT ?
         '''
-        df = pd.read_sql_query(query, self.conn, params=(symbol, periods))
+        df = pd.read_sql_query(query, self.conn, params=(symbol, interval, periods))
         if not df.empty:
             df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed', errors='coerce')
             df = df.sort_values('timestamp')
         return df
 
-    def get_previous_close(self, symbol: str) -> Optional[float]:
-        """Most recent stored close for `symbol`, or None if none yet.
+    def get_previous_close(self, symbol: str, interval: str = DEFAULT_DATA_INTERVAL) -> Optional[float]:
+        """Most recent stored close for `symbol`/interval, or None if none yet.
 
         Feeds the validator's price-jump circuit breaker: when a new bar arrives,
         comparing it to this previous close catches discontinuities (e.g. a stale
-        mock bar that teleports price) before they pollute the indicator window.
+        or bad bar that teleports price) before they pollute the indicator window.
         """
         row = self.conn.execute(
-            "SELECT close FROM price_data WHERE symbol = ? ORDER BY timestamp DESC LIMIT 1",
-            (symbol,),
+            "SELECT close FROM price_data WHERE symbol = ? AND interval = ? "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (symbol, interval),
         ).fetchone()
         return row['close'] if row else None
 
