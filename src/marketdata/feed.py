@@ -40,6 +40,11 @@ class MarketDataSource(ABC):
         """Up to ``periods`` bars for ``symbol`` at/<= ``end`` (None = latest),
         oldest-first. Columns: timestamp, open, high, low, close, volume."""
 
+    def current_bar(self, symbol: str) -> Optional[MarketData]:
+        """Fresh current bar for ``symbol`` if the source has a live feed, else None
+        (the Feed then falls back to the latest stored bar). Live sources override."""
+        return None
+
 
 class DatabaseSource(MarketDataSource):
     """Reads bars from the local ``price_data`` table for one interval.
@@ -150,7 +155,11 @@ class Feed:
         self.current_time = t
 
     def current(self, symbol: str) -> Optional[MarketData]:
-        """The most recent bar at/<= current_time, as a MarketData."""
+        """The current bar — a live source's fresh quote if available, else the most
+        recent bar at/<= current_time from storage."""
+        live = self.source.current_bar(symbol)
+        if live is not None:
+            return live
         df = self.source.bars(symbol, periods=1, end=self.current_time)
         if df.empty:
             return None
@@ -172,3 +181,42 @@ class Feed:
         if len(df) < MIN_DATA_FOR_INDICATORS:
             return {}
         return calculate_all_indicators(df)
+
+
+class LiveSource(MarketDataSource):
+    """Live market-data source: fresh current bar from Zerodha, history from the DB.
+
+    The live loop computes indicators from stored history (which grows as live bars
+    are persisted by the collector each cycle) while the CURRENT bar is the live
+    Zerodha quote. This is the live counterpart to ``DatabaseSource`` and the only
+    new ingestion piece a live run needs — everything downstream is shared.
+    """
+
+    def __init__(self, db_path: str = DB_PATH, interval: str = DEFAULT_DATA_INTERVAL):
+        from src.marketdata.sources import ZerodhaAPI  # lazy: avoids kiteconnect import in backtest
+        self.api = ZerodhaAPI()
+        self.store = DatabaseSource(db_path, interval)
+        self.interval = interval
+        if not self.api.is_available():
+            logger.warning("LiveSource: Zerodha not authenticated — live bars unavailable "
+                           "(refresh the token via scripts/generate_zerodha_token.py)")
+        else:
+            logger.info("LiveSource initialized (Zerodha live + DB history)")
+
+    def is_available(self) -> bool:
+        return self.api.is_available()
+
+    def date_range(self, symbols: List[str]) -> Tuple[Optional[str], Optional[str]]:
+        return self.store.date_range(symbols)
+
+    def bars(self, symbol: str, periods: int = DEFAULT_PERIODS,
+             end: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+        # History from the store (point-in-time query path, no preload).
+        return self.store.bars(symbol, periods=periods, end=end)
+
+    def current_bar(self, symbol: str) -> Optional[MarketData]:
+        """The fresh live bar from Zerodha (or None if the fetch fails)."""
+        return self.api.fetch_ohlc(symbol)
+
+    def close(self):
+        self.store.close()
