@@ -8,6 +8,42 @@ from src.platform.config import (
     TAKE_PROFIT_PERCENT, RECENT_DATA_LOOKBACK,
     EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
 )
+from src.features.indicators import summarize_market_regime
+from src.platform.registry import get_stock_registry
+
+
+def _sector_map(symbols) -> Dict[str, str]:
+    """{symbol: sector} via the stock registry; safe/empty on failure."""
+    out: Dict[str, str] = {}
+    try:
+        reg = get_stock_registry()
+        for s in symbols:
+            info = reg.get_stock_info(s)
+            if info and getattr(info, "sector", None):
+                out[s] = info.sector.value
+    except Exception:
+        pass
+    return out
+
+
+def _held_days(entry_time, now) -> Any:
+    """Whole days a position has been held (entry_time vs now), or None."""
+    try:
+        return max(0, (pd.Timestamp(now).normalize() - pd.Timestamp(entry_time).normalize()).days)
+    except Exception:
+        return None
+
+
+def _regime_line(portfolio_indicators: Dict[str, Dict[str, float]]) -> str:
+    """One-line market-regime summary (breadth-based, + index trend if present)."""
+    r = summarize_market_regime(portfolio_indicators)
+    if not r:
+        return "n/a"
+    line = (f"{str(r['regime']).upper()} — breadth {r.get('pct_above_sma50')}% of "
+            f"{r.get('breadth_n')} stocks above SMA50, avg RSI {r.get('avg_rsi')}")
+    if r.get("index_rsi") is not None:
+        line += f"; Nifty RSI {r.get('index_rsi')}, vs SMA50 {r.get('index_vs_sma50_pct')}%"
+    return line
 
 
 class PromptBuilder:
@@ -120,6 +156,9 @@ TECHNICAL INDICATORS:
 - MACD Signal: {PromptBuilder.safe_format(indicators.get('macd_signal'), 0)}
 - MACD Histogram: {PromptBuilder.safe_format(indicators.get('macd_histogram'), 0)}
 - Price Change %: {PromptBuilder.safe_format(indicators.get('price_change_pct'), 0)}%
+- ATR (14): {PromptBuilder.safe_format(indicators.get('atr_14'))} | Bollinger %B: {PromptBuilder.safe_format(indicators.get('bollinger_pct_b'), 0, 2)} (BW {PromptBuilder.safe_format(indicators.get('bollinger_bandwidth'), 0, 1)}%)
+- RSI trajectory Δ3: {PromptBuilder.safe_format(indicators.get('rsi_trajectory'), 0, 1)} | Stoch %K/%D: {PromptBuilder.safe_format(indicators.get('stoch_k'), 50, 0)}/{PromptBuilder.safe_format(indicators.get('stoch_d'), 50, 0)} | ROC(10): {PromptBuilder.safe_format(indicators.get('roc_10'), 0, 1)}%
+- Price vs SMA20/50: {PromptBuilder.safe_format(indicators.get('price_vs_sma20_pct'), 0, 1)}%/{PromptBuilder.safe_format(indicators.get('price_vs_sma50_pct'), 0, 1)}% | Range-pos: {PromptBuilder.safe_format(indicators.get('range_position'), 0, 2)} | OBV-trend: {PromptBuilder.safe_format(indicators.get('obv_trend'), 0, 2)}
 
 TRADING CONTEXT:
 - Strategy: {context.get('strategy', 'Swing Trading (2-5 day holds)')}
@@ -221,6 +260,8 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
         current_positions = context.get('current_positions', [])
         account_info = context.get('account_info', {})
         available_capital = account_info.get('available_capital', INITIAL_CAPITAL)
+        positions = context.get('positions', {})
+        sector_map = _sector_map(symbols_list)
 
         # Categorize stocks by ownership and watchlist
         owned_stocks = [s for s in symbols_list if s in current_positions]
@@ -237,6 +278,7 @@ PORTFOLIO CONTEXT:
 - Available Capital: ₹{available_capital:.2f}
 - Max Risk: {context.get('max_risk', MAX_RISK_PER_TRADE)*100:.1f}% per trade
 - Timestamp: {context.get('timestamp', 'Current')}
+- MARKET REGIME: {_regime_line(portfolio_indicators)}
 
 CRITICAL TRADING RULES - MUST FOLLOW:
 ═══════════════════════════════════════
@@ -314,18 +356,27 @@ INDIVIDUAL STOCK ANALYSIS:
                     category = "🟡 REMAINING"
                     allowed_actions = "BUY/HOLD only"
 
+                sf = PromptBuilder.safe_format
+                ind = indicators
+                macd_state = "above-signal" if ind.get('macd_above_signal') else "below-signal"
+                cross = ind.get('macd_cross')
+                cross_lbl = "bull-cross" if cross == 1 else ("bear-cross" if cross == -1 else "no-cross")
+                sector = sector_map.get(symbol, "")
+                pos_line = ""
+                if is_owned and symbol in positions:
+                    p = positions[symbol]
+                    held = _held_days(p.get('entry_time'), context.get('timestamp'))
+                    pos_line = (f"\n• Position: entry ₹{sf(p.get('entry_price'))}, "
+                                f"P&L {sf(p.get('pnl_percent'), 0, 1)}%"
+                                + (f", held {held}d" if held is not None else ""))
+
                 prompt += f"""
---- {symbol} {category} ---
-• Current Price: ₹{current_price:.2f}
-• Allowed Actions: {allowed_actions}
-• 5-Day Change: {price_change_5d:.2f}%
-• Volume Ratio: {volume_ratio:.2f}x
-• Technical Indicators:
-  - SMA 20: ₹{PromptBuilder.safe_format(indicators.get('sma_20'), current_price)}
-  - SMA 50: ₹{PromptBuilder.safe_format(indicators.get('sma_50'), current_price)}
-  - RSI (14): {PromptBuilder.safe_format(indicators.get('rsi_14'), 50, 1)}
-  - MACD: {PromptBuilder.safe_format(indicators.get('macd'), 0)}
-  - MACD Signal: {PromptBuilder.safe_format(indicators.get('macd_signal'), 0)}
+--- {symbol} {category}{f' [{sector}]' if sector else ''} ---
+• Price ₹{current_price:.2f} | Allowed: {allowed_actions}{pos_line}
+• Trend: vs SMA20 {sf(ind.get('price_vs_sma20_pct'), 0, 1)}% / vs SMA50 {sf(ind.get('price_vs_sma50_pct'), 0, 1)}% | 5-Day {price_change_5d:.2f}%
+• Momentum: RSI {sf(ind.get('rsi_14'), 50, 1)} (Δ3 {sf(ind.get('rsi_trajectory'), 0, 1)}) | MACD {macd_state}/{cross_lbl} | Stoch%K {sf(ind.get('stoch_k'), 50, 0)} | ROC10 {sf(ind.get('roc_10'), 0, 1)}%
+• Volatility: ATR {sf(ind.get('atr_14'))} | Boll%B {sf(ind.get('bollinger_pct_b'), 0, 2)} (BW {sf(ind.get('bollinger_bandwidth'), 0, 1)}%) | Range-pos {sf(ind.get('range_position'), 0, 2)}
+• Volume: {volume_ratio:.2f}x avg | OBV-trend {sf(ind.get('obv_trend'), 0, 2)} | vol-trend {sf(ind.get('volume_trend'), 1, 2)}
 """
 
         prompt += f"""

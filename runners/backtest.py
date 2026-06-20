@@ -324,6 +324,7 @@ class HistoricalSimulator:
                 'timestamp': timestamp,
                 'simulation_interval': self.config.simulation_interval_minutes,
                 'current_positions': position_symbols,
+                'positions': current_positions,  # full per-symbol state for owned-stock context
                 'account_info': account_info or {},
             }
 
