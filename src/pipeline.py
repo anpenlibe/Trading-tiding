@@ -50,7 +50,8 @@ class TradingPipeline:
                     logger.info(f"Skipping SELL for {symbol} - no position held")
                     continue
 
-                trade_result = self._execute(symbol, decision, current_prices[symbol])
+                atr = (portfolio_indicators.get(symbol) or {}).get('atr_14')
+                trade_result = self._execute(symbol, decision, current_prices[symbol], atr=atr)
                 if trade_result.get('status') == 'EXECUTED':
                     executed.append({
                         'symbol': symbol, 'decision': decision,
@@ -71,11 +72,16 @@ class TradingPipeline:
             if signal_type == 'SELL' and not self.executor.has_position(symbol):
                 logger.info(f"Special pass: skip SELL for {symbol} - no position held")
             else:
-                executed = self._execute(symbol, decision, current_price)
+                executed = self._execute(symbol, decision, current_price,
+                                         atr=(indicators or {}).get('atr_14'))
         return {'symbol': symbol, 'decision': decision, 'executed': executed}
 
-    def _execute(self, symbol: str, signal: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-        """Risk-validate + size + execute one signal at ``current_price``."""
+    def _execute(self, symbol: str, signal: Dict[str, Any], current_price: float,
+                 atr: Optional[float] = None) -> Dict[str, Any]:
+        """Risk-validate + size + execute one signal at ``current_price``.
+
+        ``atr`` (the symbol's ATR(14), when available) makes the risk manager scale
+        stops/targets to the stock's own volatility instead of a flat percentage."""
         try:
             # The fill happens at the current market price; stamp it on the signal
             # so risk sizing doesn't crash on a missing entry_price (otherwise
@@ -93,13 +99,20 @@ class TradingPipeline:
                 if not is_valid:
                     return {'status': 'REJECTED', 'reason': rejection_reason}
 
+                # When ATR is available, let it set volatility-scaled stops/targets
+                # rather than the AI's templated levels — the single-symbol prompt
+                # tells the model to echo entry*0.985 / entry*1.03, so its stop is
+                # boilerplate, not a considered level. ATR adapts per stock instead.
+                stop_in = None if atr else signal.get('stop_loss')
+                target_in = None if atr else signal.get('target')
                 risk_params = self.risk_manager.calculate_risk_parameters(
                     symbol=symbol,
                     signal_type=signal['signal'],
                     entry_price=current_price,
                     capital=account_info['available_capital'],
-                    stop_loss=signal.get('stop_loss'),
-                    target=signal.get('target'),
+                    stop_loss=stop_in,
+                    target=target_in,
+                    atr=atr,
                 )
                 signal.update({
                     'position_size': risk_params.position_size,

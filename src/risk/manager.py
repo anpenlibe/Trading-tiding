@@ -153,17 +153,20 @@ class SimpleRiskManager(BaseRiskManager):
 
         return position_size
     
-    def calculate_risk_parameters(self, 
+    def calculate_risk_parameters(self,
                                 symbol: str,
                                 signal_type: str,  # BUY or SELL
                                 entry_price: float,
                                 capital: float,
                                 stop_loss: Optional[float] = None,
                                 target: Optional[float] = None,
-                                custom_risk_percent: Optional[float] = None) -> RiskParameters:
+                                custom_risk_percent: Optional[float] = None,
+                                atr: Optional[float] = None,
+                                atr_mult: float = 2.0,
+                                atr_target_mult: float = 3.0) -> RiskParameters:
         """
         Calculate comprehensive risk parameters for a trade.
-        
+
         Args:
             symbol: Trading symbol
             signal_type: BUY or SELL
@@ -172,27 +175,38 @@ class SimpleRiskManager(BaseRiskManager):
             stop_loss: Optional custom stop loss
             target: Optional custom target
             custom_risk_percent: Optional custom risk percentage
-            
+            atr: Optional ATR(14) for the symbol — when given (and no explicit
+                stop/target), stops/targets scale with the stock's own volatility
+                (stop = entry ∓ atr_mult*ATR) instead of a flat percentage, so a
+                volatile name gets a wider stop and a quiet one a tighter stop.
+            atr_mult: ATR multiple for the stop distance (default 2.0)
+            atr_target_mult: ATR multiple for the target distance (default 3.0,
+                keeping the 1.5:1 reward:risk the % defaults also use)
+
         Returns:
             RiskParameters object with all calculations
         """
         # Use custom risk or default
         risk_percent = custom_risk_percent or self.risk_per_trade
-        
+
+        # Volatility-based stop distance when ATR is available; else fixed percent.
+        use_atr = atr is not None and atr > 0
+        stop_dist = atr * atr_mult if use_atr else None
+        target_dist = atr * atr_target_mult if use_atr else None
+
         # Adjust entry price for slippage
         if signal_type == "BUY":
             adjusted_entry = entry_price * (1 + self.slippage)
-            # Calculate stop loss and target if not provided
             if stop_loss is None:
-                stop_loss = entry_price * (1 - self.stop_loss_percent)
+                stop_loss = (entry_price - stop_dist) if use_atr else entry_price * (1 - self.stop_loss_percent)
             if target is None:
-                target = entry_price * (1 + self.take_profit_percent)
+                target = (entry_price + target_dist) if use_atr else entry_price * (1 + self.take_profit_percent)
         else:  # SELL
             adjusted_entry = entry_price * (1 - self.slippage)
             if stop_loss is None:
-                stop_loss = entry_price * (1 + self.stop_loss_percent)
+                stop_loss = (entry_price + stop_dist) if use_atr else entry_price * (1 + self.stop_loss_percent)
             if target is None:
-                target = entry_price * (1 - self.take_profit_percent)
+                target = (entry_price - target_dist) if use_atr else entry_price * (1 - self.take_profit_percent)
         
         # Calculate stop distance
         stop_distance = abs(adjusted_entry - stop_loss)
