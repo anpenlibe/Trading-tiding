@@ -19,9 +19,10 @@ import logging
 from src.platform.types import BaseRiskManager
 from src.platform.config import (
     MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT, TAKE_PROFIT_PERCENT,
-    PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE,
+    PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE, TRADING_PRODUCT,
     MIN_TRADE_VALUE, MAX_POSITION_SIZE
 )
+from src.execution.costs import compute_charges
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -214,21 +215,30 @@ class SimpleRiskManager(BaseRiskManager):
         # Calculate position size
         position_size = self.calculate_position_size(capital, risk_percent, stop_distance, adjusted_entry)
         
-        # Calculate position value and costs
+        # Calculate position value and costs. Use the SAME turnover-based charge
+        # model the executor actually bills (execution/costs.compute_charges) plus
+        # the optional flat fee, so affordability here matches the real fill — a
+        # flat commission of 0 used to let a BUY pass risk then cost more at fill.
+        def _charge(value):
+            return compute_charges(value, "BUY", TRADING_PRODUCT) + self.commission
+
         position_value = position_size * adjusted_entry
-        total_cost = position_value + self.commission
-        
+        total_cost = position_value + _charge(position_value)
+
         # Ensure we don't exceed capital
         if total_cost > capital:
-            # Reduce position size to fit capital
-            max_position_size = int((capital - self.commission) / adjusted_entry)
+            # Reduce position size to fit capital (reserve ~1% for charges, then
+            # confirm against the real charge on the reduced size).
+            max_position_size = int((capital * 0.99) / adjusted_entry)
             position_size = max(1, min(position_size, max_position_size))
             position_value = position_size * adjusted_entry
-            total_cost = position_value + self.commission
-        
+            total_cost = position_value + _charge(position_value)
+
+        commission = _charge(position_value)
+
         # Recalculate actual risk
         actual_risk = position_size * stop_distance
-        max_loss = actual_risk + self.commission
+        max_loss = actual_risk + commission
         
         # Calculate risk-reward ratio
         target_distance = abs(target - adjusted_entry)
@@ -240,7 +250,7 @@ class SimpleRiskManager(BaseRiskManager):
             stop_loss=stop_loss,
             target=target,
             entry_price=adjusted_entry,
-            commission=self.commission,
+            commission=commission,
             total_cost=total_cost,
             risk_reward_ratio=actual_rr_ratio,
             position_value=position_value,
