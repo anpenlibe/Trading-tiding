@@ -59,6 +59,21 @@ class TradingPipeline:
 
         return {'decisions': decisions, 'market_analysis': market_analysis, 'executed': executed}
 
+    def run_special(self, symbol: str, market_data, indicators: Dict[str, float],
+                    current_price: float) -> Dict[str, Any]:
+        """Alert-triggered SPECIAL pass: a single-symbol deep analysis (short prompt
+        → the fast gpt-oss symbol chain) → risk → execute. Returns
+        ``{'symbol', 'decision', 'executed'}``."""
+        decision = self.brain.analyze(market_data, indicators)
+        signal_type = decision.get('signal')
+        executed = None
+        if signal_type and signal_type != 'HOLD' and self.executor is not None:
+            if signal_type == 'SELL' and not self.executor.has_position(symbol):
+                logger.info(f"Special pass: skip SELL for {symbol} - no position held")
+            else:
+                executed = self._execute(symbol, decision, current_price)
+        return {'symbol': symbol, 'decision': decision, 'executed': executed}
+
     def _execute(self, symbol: str, signal: Dict[str, Any], current_price: float) -> Dict[str, Any]:
         """Risk-validate + size + execute one signal at ``current_price``."""
         try:

@@ -39,6 +39,8 @@ class SimulationConfig:
     enable_ai_brain: bool = True
     enable_paper_trading: bool = True
     interval: str = DEFAULT_DATA_INTERVAL  # which price_data interval to replay
+    general_pass_every: int = 1  # full general pass every N ticks; alert-driven special
+                                 # passes run on the ticks between (1 = general every tick, no alerts)
 
 
 def select_simulation_timestamps(all_timestamps, start_date, end_date, interval_minutes):
@@ -114,6 +116,7 @@ class HistoricalSimulator:
         self.risk_manager = None
         self.paper_trader = None
         self.pipeline = None
+        self.alert_manager = None
         
         logger.info(f"Historical simulator initialized for {config.start_date} to {config.end_date}")
     
@@ -179,6 +182,9 @@ class HistoricalSimulator:
         if self.config.enable_ai_brain and self.ai_brain:
             from src.pipeline import TradingPipeline
             self.pipeline = TradingPipeline(self.ai_brain, self.risk_manager, self.paper_trader)
+            # Alert manager drives the alert->special-pass loop between general passes.
+            from src.alerts.manager import AlertManager
+            self.alert_manager = AlertManager(self.config.symbols)
     
     def load_simulation_data(self):
         """Load historical data for simulation"""
@@ -227,7 +233,7 @@ class HistoricalSimulator:
                 self.feed.set_time(timestamp)
                 
                 # Process each symbol at this timestamp
-                self.process_timestamp(timestamp)
+                self.process_timestamp(timestamp, i)
                 
                 # Progress update
                 if i % 100 == 0:
@@ -248,13 +254,15 @@ class HistoricalSimulator:
         except Exception as e:
             logger.error(f"Simulation error: {e}")
     
-    def process_timestamp(self, timestamp: pd.Timestamp):
-        """Process all symbols at a given timestamp using portfolio analysis"""
+    def process_timestamp(self, timestamp: pd.Timestamp, tick_index: int = 0):
+        """Gather bars for all symbols, then run the general pass (on cadence) or
+        an alert-driven special pass (on the ticks between)."""
 
         # Collect data for all symbols
         portfolio_data = {}
         portfolio_indicators = {}
         current_prices = {}
+        snapshots = {}  # {symbol: {close, volume, indicators}} for alert checks
 
         skipped_symbols = {}  # Track why symbols are skipped
 
@@ -284,6 +292,7 @@ class HistoricalSimulator:
             portfolio_data[symbol] = historical_df
             portfolio_indicators[symbol] = indicators
             current_prices[symbol] = current_data.close
+            snapshots[symbol] = {'close': current_data.close, 'volume': current_data.volume, 'indicators': indicators}
 
         # Log diagnostic info
         if skipped_symbols:
@@ -294,10 +303,18 @@ class HistoricalSimulator:
         if not portfolio_data:
             return
 
-        # Hand the gathered bars to the shared decide->risk->execute pipeline.
+        # General pass on its cadence; alert-driven special passes on the ticks between.
         if not (self.config.enable_ai_brain and self.pipeline):
             return
 
+        if tick_index % max(1, self.config.general_pass_every) == 0:
+            self._run_general_pass(timestamp, portfolio_data, portfolio_indicators, current_prices)
+        else:
+            self._run_alert_pass(timestamp, portfolio_data, portfolio_indicators, current_prices, snapshots)
+
+    def _run_general_pass(self, timestamp, portfolio_data, portfolio_indicators, current_prices):
+        """General pass: portfolio prompt over all symbols -> decisions; register the
+        AI's alert_conditions so special passes can fire between cycles."""
         try:
             current_positions = self.paper_trader.get_positions() if self.paper_trader else {}
             position_symbols = [sym for sym, pos in current_positions.items() if pos.get('quantity', 0) > 0]
@@ -316,29 +333,61 @@ class HistoricalSimulator:
 
             decisions = result['decisions']
             self.simulation_stats['ai_decisions'] += len(decisions)
+            if self.alert_manager:
+                self.alert_manager.register_ai_conditions(decisions)
             if result['market_analysis']:
                 logger.info(f"Market Analysis at {timestamp}: {result['market_analysis'][:100]}...")
 
             for ex in result['executed']:
-                d = ex['decision']
-                self.trades_executed.append({
-                    'timestamp': timestamp,
-                    'symbol': ex['symbol'],
-                    'action': d['signal'],
-                    'price': ex['price'],
-                    'quantity': d.get('position_size', 1),
-                    'reasoning': d.get('reasoning', ''),
-                    'confidence': d.get('confidence', 0),
-                    'stop_loss': d.get('stop_loss'),
-                    'target': d.get('target'),
-                    'market_analysis': result['market_analysis'][:200],
-                })
-                self.simulation_stats['trades_count'] += 1
+                self._record_trade(timestamp, ex['symbol'], ex['decision'], ex['price'],
+                                   result['market_analysis'][:200])
 
             non_hold = len([d for d in decisions.values() if d.get('signal') != 'HOLD'])
             logger.info(f"Portfolio analysis completed: {len(decisions)} symbols analyzed, {non_hold} signals generated")
         except Exception as e:
             logger.error(f"Portfolio analysis error at {timestamp}: {e}")
+
+    def _run_alert_pass(self, timestamp, portfolio_data, portfolio_indicators, current_prices, snapshots):
+        """Between general passes: check alerts; each triggered symbol gets a fast
+        single-symbol SPECIAL pass (gpt-oss) -> risk -> execute."""
+        if not self.alert_manager:
+            return
+        triggered = self.alert_manager.evaluate(snapshots)
+        if not triggered:
+            return
+        logger.info(f"Alerts triggered at {timestamp}: {triggered}")
+        for symbol in triggered:
+            if symbol not in portfolio_data:
+                continue
+            try:
+                out = self.pipeline.run_special(
+                    symbol, portfolio_data[symbol], portfolio_indicators[symbol], current_prices[symbol]
+                )
+                self.simulation_stats['ai_decisions'] += 1
+                d = out['decision']
+                logger.info(f"Special pass {symbol}: {d.get('signal')} (conf {d.get('confidence')})")
+                ex = out.get('executed')
+                if ex and ex.get('status') == 'EXECUTED':
+                    self._record_trade(timestamp, symbol, d, current_prices[symbol],
+                                       f"SPECIAL pass (alert on {symbol})")
+            except Exception as e:
+                logger.error(f"Special pass error for {symbol}: {e}")
+
+    def _record_trade(self, timestamp, symbol, decision, price, market_analysis):
+        """Append an executed trade to the run's trade log + bump the counter."""
+        self.trades_executed.append({
+            'timestamp': timestamp,
+            'symbol': symbol,
+            'action': decision['signal'],
+            'price': price,
+            'quantity': decision.get('position_size', 1),
+            'reasoning': decision.get('reasoning', ''),
+            'confidence': decision.get('confidence', 0),
+            'stop_loss': decision.get('stop_loss'),
+            'target': decision.get('target'),
+            'market_analysis': market_analysis,
+        })
+        self.simulation_stats['trades_count'] += 1
 
 
     def finalize_simulation(self):
@@ -435,6 +484,9 @@ def build_arg_parser():
     parser.add_argument('--speed', type=float, default=5.0, help='Speed multiplier; >=100 skips the inter-tick sleep (default: 5.0)')
     parser.add_argument('--interval', choices=['1m', '5m', '15m', '30m', '1d'], default=DEFAULT_DATA_INTERVAL,
                         help=f'Candle interval to replay from the DB (default: {DEFAULT_DATA_INTERVAL})')
+    parser.add_argument('--general-every', type=int, default=1,
+                        help='Run the general (all-symbols) pass every N ticks; alert-driven '
+                             'single-symbol special passes run on the ticks between (default: 1 = no alerts)')
     parser.add_argument('--sim-interval', type=int, default=30, help='Minutes between decision points (default: 30)')
     parser.add_argument('--interval-days', type=int, help='Days between decision points (overrides --sim-interval; e.g. 3)')
     parser.add_argument('--start-date', type=str, help='Explicit window start (YYYY-MM-DD)')
@@ -540,6 +592,7 @@ def main():
         speed_multiplier=speed,
         simulation_interval_minutes=resolve_interval_minutes(args),
         interval=args.interval,
+        general_pass_every=args.general_every,
     )
 
     if interactive:
