@@ -113,6 +113,7 @@ class HistoricalSimulator:
         self.ai_brain = None
         self.risk_manager = None
         self.paper_trader = None
+        self.pipeline = None
         
         logger.info(f"Historical simulator initialized for {config.start_date} to {config.end_date}")
     
@@ -173,6 +174,11 @@ class HistoricalSimulator:
         except ImportError as e:
             logger.warning(f"Paper Trader not available - continuing without trade execution: {e}")
             self.config.enable_paper_trading = False
+
+        # Shared decide->risk->execute pipeline (mode-agnostic; live will reuse it).
+        if self.config.enable_ai_brain and self.ai_brain:
+            from src.pipeline import TradingPipeline
+            self.pipeline = TradingPipeline(self.ai_brain, self.risk_manager, self.paper_trader)
     
     def load_simulation_data(self):
         """Load historical data for simulation"""
@@ -288,150 +294,53 @@ class HistoricalSimulator:
         if not portfolio_data:
             return
 
-        # Make single portfolio AI decision
-        if self.config.enable_ai_brain and self.ai_brain:
-            try:
-                # Get current portfolio positions
-                current_positions = self.paper_trader.get_positions() if self.paper_trader else []
-                position_symbols = [symbol for symbol, pos_data in current_positions.items() if pos_data.get('quantity', 0) > 0]
+        # Hand the gathered bars to the shared decide->risk->execute pipeline.
+        if not (self.config.enable_ai_brain and self.pipeline):
+            return
 
-                # Get account info safely
-                account_info = {}
-                if self.paper_trader:
-                    try:
-                        account_info = self.paper_trader.get_account_info() or {}
-                    except Exception as e:
-                        logger.debug(f"Could not get account info: {e}")
-                        account_info = {}
-
-                # Create context for portfolio analysis
-                context = {
-                    'strategy': 'swing',
-                    'timestamp': timestamp,
-                    'simulation_interval': self.config.simulation_interval_minutes,
-                    'current_positions': position_symbols,
-                    'account_info': account_info
-                }
-
-                # Portfolio analysis with intelligent fallback for position protection
-                portfolio_result = self.ai_brain.analyze_portfolio_with_intelligent_fallback(
-                    portfolio_data, portfolio_indicators, context
-                )
-
-                # Update statistics
-                num_decisions = len(portfolio_result.get('decisions', {}))
-                self.simulation_stats['ai_decisions'] += num_decisions
-
-                # Log market analysis and fallback status
-                market_analysis = portfolio_result.get('market_analysis', '')
-                if market_analysis:
-                    logger.info(f"Market Analysis at {timestamp}: {market_analysis[:100]}...")
-
-                # Log intelligent fallback status if used
-                fallback_type = portfolio_result.get('fallback_type')
-                if fallback_type:
-                    critical_analyzed = portfolio_result.get('critical_symbols_analyzed', 0)
-                    owned_protected = portfolio_result.get('owned_positions_protected', 0)
-                    logger.warning(f"Intelligent fallback activated: {fallback_type}, protected {owned_protected} positions with {critical_analyzed} individual analyses")
-
-                # Process individual decisions
-                for symbol, decision in portfolio_result.get('decisions', {}).items():
-                    if symbol not in current_prices:
-                        continue
-
-                    signal_type = decision.get('signal')
-
-                    # Check if we can actually execute this trade
-                    if signal_type == "SELL":
-                        if not self.paper_trader.has_position(symbol):
-                            logger.info(f"Skipping SELL for {symbol} - no position held")
-                            continue
-
-                    # Execute trade if signal is not HOLD
-                    if (self.config.enable_paper_trading and
-                        self.paper_trader and
-                        signal_type != "HOLD"):
-
-                        trade_result = self._execute_simulated_trade(
-                            symbol, decision, current_prices[symbol], timestamp
-                        )
-
-                        if trade_result.get('status') == 'EXECUTED':
-                            self.trades_executed.append({
-                                'timestamp': timestamp,
-                                'symbol': symbol,
-                                'action': decision['signal'],
-                                'price': current_prices[symbol],
-                                'quantity': decision.get('position_size', 1),
-                                'reasoning': decision.get('reasoning', ''),
-                                'confidence': decision.get('confidence', 0),
-                                'stop_loss': decision.get('stop_loss'),
-                                'target': decision.get('target'),
-                                'market_analysis': market_analysis[:200]  # Store brief market context
-                            })
-                            self.simulation_stats['trades_count'] += 1
-
-                logger.info(f"Portfolio analysis completed: {num_decisions} symbols analyzed, {len([d for d in portfolio_result.get('decisions', {}).values() if d.get('signal') != 'HOLD'])} signals generated")
-
-            except Exception as e:
-                logger.error(f"Portfolio analysis error at {timestamp}: {e}")
-
-    def _execute_simulated_trade(self, symbol: str, signal: Dict, current_price: float, timestamp: pd.Timestamp) -> Dict:
-        """Execute a trade using the unified pipeline approach"""
         try:
-            # The fill happens at the current market price; stamp it on the
-            # signal so risk validation/sizing don't crash on a missing
-            # entry_price (otherwise swallowed as a silent non-execution).
-            if signal.get('entry_price') is None:
-                signal['entry_price'] = current_price
-
-            # Validate trade with risk manager if available
-            if self.risk_manager:
-                # Get current account info
-                account_info = self.paper_trader.get_account_info()
-                signal['available_capital'] = account_info['available_capital']
-                
-                # Validate trade
-                current_positions = self.paper_trader.get_positions()
-                is_valid, rejection_reason = self.risk_manager.validate_trade(signal, current_positions)
-                
-                if not is_valid:
-                    return {
-                        'status': 'REJECTED',
-                        'reason': rejection_reason
-                    }
-                
-                # Calculate risk parameters
-                risk_params = self.risk_manager.calculate_risk_parameters(
-                    symbol=symbol,
-                    signal_type=signal['signal'],
-                    entry_price=current_price,
-                    capital=account_info['available_capital'],
-                    stop_loss=signal.get('stop_loss'),
-                    target=signal.get('target')
-                )
-                
-                # Update signal with risk calculations
-                signal.update({
-                    'position_size': risk_params.position_size,
-                    'stop_loss': risk_params.stop_loss,
-                    'target': risk_params.target,
-                    'entry_price': risk_params.entry_price,
-                    'risk_amount': risk_params.risk_amount
-                })
-            
-            # Add symbol to the signal dictionary before execution
-            signal['symbol'] = symbol
-
-            return self.paper_trader.execute_trade(signal, current_price)
-            
-        except Exception as e:
-            logger.debug(f"Trade execution error for {symbol}: {e}")
-            return {
-                'status': 'ERROR',
-                'reason': str(e)
+            current_positions = self.paper_trader.get_positions() if self.paper_trader else {}
+            position_symbols = [sym for sym, pos in current_positions.items() if pos.get('quantity', 0) > 0]
+            account_info = self.paper_trader.get_account_info() if self.paper_trader else {}
+            context = {
+                'strategy': 'swing',
+                'timestamp': timestamp,
+                'simulation_interval': self.config.simulation_interval_minutes,
+                'current_positions': position_symbols,
+                'account_info': account_info or {},
             }
-    
+
+            result = self.pipeline.run_decisions(
+                portfolio_data, portfolio_indicators, current_prices, context
+            )
+
+            decisions = result['decisions']
+            self.simulation_stats['ai_decisions'] += len(decisions)
+            if result['market_analysis']:
+                logger.info(f"Market Analysis at {timestamp}: {result['market_analysis'][:100]}...")
+
+            for ex in result['executed']:
+                d = ex['decision']
+                self.trades_executed.append({
+                    'timestamp': timestamp,
+                    'symbol': ex['symbol'],
+                    'action': d['signal'],
+                    'price': ex['price'],
+                    'quantity': d.get('position_size', 1),
+                    'reasoning': d.get('reasoning', ''),
+                    'confidence': d.get('confidence', 0),
+                    'stop_loss': d.get('stop_loss'),
+                    'target': d.get('target'),
+                    'market_analysis': result['market_analysis'][:200],
+                })
+                self.simulation_stats['trades_count'] += 1
+
+            non_hold = len([d for d in decisions.values() if d.get('signal') != 'HOLD'])
+            logger.info(f"Portfolio analysis completed: {len(decisions)} symbols analyzed, {non_hold} signals generated")
+        except Exception as e:
+            logger.error(f"Portfolio analysis error at {timestamp}: {e}")
+
+
     def finalize_simulation(self):
         """Generate simulation summary"""
         
