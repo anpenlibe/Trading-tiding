@@ -9,7 +9,6 @@ interval, to test strategies under simulated real-time conditions.
 import os
 import sys
 import time
-import sqlite3
 import argparse
 import pandas as pd
 from datetime import datetime, timedelta
@@ -20,8 +19,8 @@ from dataclasses import dataclass
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.platform.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL, DEFAULT_DATA_INTERVAL, DEFAULT_PERIODS
-from src.features.indicators import calculate_all_indicators
 from src.platform.types import MarketData
+from src.marketdata.feed import DatabaseSource, Feed
 from src.platform.logger import setup_logger
 
 # Setup logger
@@ -40,166 +39,6 @@ class SimulationConfig:
     enable_ai_brain: bool = True
     enable_paper_trading: bool = True
     interval: str = DEFAULT_DATA_INTERVAL  # which price_data interval to replay
-
-
-class HistoricalDataProvider:
-    """Provides historical data in chronological order"""
-    
-    def __init__(self, db_path: str, interval: str = DEFAULT_DATA_INTERVAL):
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.interval = interval
-        logger.info(f"Historical data provider initialized (interval={interval})")
-
-    def get_data_range(self, symbols: List[str]) -> Tuple[str, str]:
-        """Get the available date range for symbols"""
-        placeholders = ','.join(['?' for _ in symbols])
-        query = f'''
-            SELECT
-                MIN(DATE(timestamp)) as start_date,
-                MAX(DATE(timestamp)) as end_date,
-                COUNT(*) as total_records
-            FROM price_data
-            WHERE symbol IN ({placeholders}) AND interval = ?
-        '''
-
-        result = self.conn.execute(query, symbols + [self.interval]).fetchone()
-        logger.info(f"Available data: {result['start_date']} to {result['end_date']} ({result['total_records']} records)")
-        return result['start_date'], result['end_date']
-    
-    def get_simulation_data(self, config: SimulationConfig,
-                            warmup_bars: int = DEFAULT_PERIODS) -> pd.DataFrame:
-        """Load bars for the simulation, INCLUDING an indicator-warmup lookback.
-
-        Indicators (RSI/MACD/SMA up to 200) need history *before* the first
-        decision bar. We therefore load from `warmup_bars` bars of the chosen
-        interval BEFORE the window start, through the window end. Anchoring the
-        floor to an actual bar COUNT (not a fixed "previous day") is what makes
-        this interval-agnostic: a 1-day prior window holds ~1 daily bar but ~375
-        one-minute bars, so the old previous-day approach starved daily runs to a
-        single bar and produced zero decisions.
-        """
-        placeholders = ','.join(['?' for _ in config.symbols])
-
-        # Floor = timestamp of the bar `warmup_bars` rows before the window start
-        # (across the symbols' shared calendar). Falls back to the window start.
-        warmup_query = f'''
-            SELECT MIN(ts) AS floor_ts FROM (
-                SELECT DISTINCT timestamp AS ts
-                FROM price_data
-                WHERE symbol IN ({placeholders})
-                    AND interval = ?
-                    AND timestamp < ?
-                ORDER BY ts DESC
-                LIMIT ?
-            )
-        '''
-        warmup_params = config.symbols + [self.interval, config.start_date, warmup_bars]
-        row = self.conn.execute(warmup_query, warmup_params).fetchone()
-
-        if row and row['floor_ts']:
-            actual_start_date = row['floor_ts']
-            logger.info(f"Indicator warmup: loading from {actual_start_date} "
-                        f"(up to {warmup_bars} {self.interval} bars before window)")
-        else:
-            actual_start_date = config.start_date
-            logger.warning(f"No pre-window history for warmup; starting at window {actual_start_date}")
-
-        query = f'''
-            SELECT
-                symbol, timestamp, open, high, low, close, volume, source
-            FROM price_data
-            WHERE symbol IN ({placeholders})
-                AND interval = ?
-                AND timestamp >= ?
-                AND timestamp <= ?
-            ORDER BY timestamp ASC
-        '''
-
-        params = config.symbols + [self.interval, actual_start_date, config.end_date + ' 23:59:59']
-        df = pd.read_sql_query(query, self.conn, params=params)
-        
-        if df.empty:
-            logger.warning(f"No data found for period {config.start_date} to {config.end_date}")
-            return df
-        
-        # Fix timestamp parsing
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', utc=True)
-        df['timestamp'] = df['timestamp'].dt.tz_localize(None)  # Remove timezone for consistency
-
-        logger.info(f"Loaded {len(df)} records for simulation ({len(config.symbols)} symbols)")
-        return df
-    
-    def close(self):
-        """Close database connection"""
-        if self.conn:
-            self.conn.close()
-
-
-class SimulationDataCollector:
-    """Simulates the DataCollector for historical data"""
-    
-    def __init__(self, historical_data: pd.DataFrame):
-        self.historical_data = historical_data
-        self.current_time = None
-        logger.info("Simulation data collector initialized")
-    
-    def set_current_time(self, timestamp: pd.Timestamp):
-        """Set the current simulation time"""
-        self.current_time = timestamp
-    
-    def get_current_data(self, symbol: str) -> Optional[MarketData]:
-        """Get current data for a symbol at simulation time"""
-        if self.current_time is None:
-            return None
-        
-        # Get data at or before current time
-        symbol_data = self.historical_data[
-            (self.historical_data['symbol'] == symbol) & 
-            (self.historical_data['timestamp'] <= self.current_time)
-        ].tail(1)
-        
-        if symbol_data.empty:
-            return None
-        
-        row = symbol_data.iloc[0]
-        return MarketData(
-            symbol=symbol,
-            timestamp=row['timestamp'].to_pydatetime(),
-            open=float(row['open']),
-            high=float(row['high']),
-            low=float(row['low']),
-            close=float(row['close']),
-            volume=int(row['volume']),
-            source=f"simulation_{row['source']}"
-        )
-    
-    def get_historical_data_for_indicators(self, symbol: str, periods: int = DEFAULT_PERIODS) -> pd.DataFrame:
-        """Return up to `periods` bars for `symbol` at/just-before the current sim
-        time, oldest-first. simulation_data already carries a warmup lookback (see
-        get_simulation_data), so this just tails the history — interval-agnostic,
-        unlike the old 'previous day 09:15' window that yielded a single bar on
-        daily data and skipped every symbol as 'insufficient data'."""
-        if self.current_time is None:
-            return pd.DataFrame()
-
-        symbol_data = self.historical_data[
-            (self.historical_data['symbol'] == symbol) &
-            (self.historical_data['timestamp'] <= self.current_time)
-        ].tail(periods)
-
-        if symbol_data.empty:
-            return pd.DataFrame()
-
-        return symbol_data[['timestamp', 'open', 'high', 'low', 'close', 'volume']].copy()
-    
-    def calculate_indicators(self, symbol: str) -> Dict[str, float]:
-        """Calculate indicators for current simulation time"""
-        df = self.get_historical_data_for_indicators(symbol)
-        if len(df) < 20:  # Minimum data for indicators
-            return {}
-
-        return calculate_all_indicators(df)
 
 
 def select_simulation_timestamps(all_timestamps, start_date, end_date, interval_minutes):
@@ -258,9 +97,8 @@ class HistoricalSimulator:
     
     def __init__(self, config: SimulationConfig):
         self.config = config
-        self.data_provider = HistoricalDataProvider(DB_PATH, config.interval)
-        self.simulation_data = None
-        self.data_collector = None
+        self.source = DatabaseSource(DB_PATH, config.interval)
+        self.feed = None
         self.current_time = None
         self.trades_executed = []
         self.simulation_stats = {
@@ -281,7 +119,7 @@ class HistoricalSimulator:
     def validate_config(self) -> bool:
         """Validate simulation configuration"""
         # Check if data exists for the period
-        start_date, end_date = self.data_provider.get_data_range(self.config.symbols)
+        start_date, end_date = self.source.date_range(self.config.symbols)
         
         if not start_date or not end_date:
             logger.error("No historical data found in database")
@@ -338,12 +176,12 @@ class HistoricalSimulator:
     
     def load_simulation_data(self):
         """Load historical data for simulation"""
-        self.simulation_data = self.data_provider.get_simulation_data(self.config)
-        if self.simulation_data.empty:
+        df = self.source.preload(self.config.symbols, self.config.start_date, self.config.end_date)
+        if df.empty:
             raise ValueError("No data available for simulation period")
         
-        self.data_collector = SimulationDataCollector(self.simulation_data)
-        logger.info(f"Loaded {len(self.simulation_data)} data points for simulation")
+        self.feed = Feed(self.source)
+        logger.info(f"Loaded {len(df)} data points for simulation")
     
     def run_simulation(self):
         """Run the historical simulation"""
@@ -362,7 +200,7 @@ class HistoricalSimulator:
         # Get unique timestamps in chronological order, then pick the bars to
         # simulate (in-window, intraday-preferred, spaced by the interval). The
         # selection logic lives in a pure, unit-tested helper.
-        all_timestamps = sorted(self.simulation_data['timestamp'].unique())
+        all_timestamps = self.source.all_timestamps()
         timestamps = select_simulation_timestamps(
             all_timestamps,
             self.config.start_date,
@@ -380,7 +218,7 @@ class HistoricalSimulator:
         try:
             for i, timestamp in enumerate(timestamps):
                 self.current_time = timestamp
-                self.data_collector.set_current_time(timestamp)
+                self.feed.set_time(timestamp)
                 
                 # Process each symbol at this timestamp
                 self.process_timestamp(timestamp)
@@ -416,19 +254,19 @@ class HistoricalSimulator:
 
         for symbol in self.config.symbols:
             # Get current data
-            current_data = self.data_collector.get_current_data(symbol)
+            current_data = self.feed.current(symbol)
             if not current_data:
                 skipped_symbols[symbol] = "No current data"
                 continue
 
             # Get historical data for indicators
-            historical_df = self.data_collector.get_historical_data_for_indicators(symbol, 50)
+            historical_df = self.feed.history(symbol, 50)
             if len(historical_df) < 20:
                 skipped_symbols[symbol] = f"Insufficient data ({len(historical_df)} periods)"
                 continue
 
             # Calculate indicators
-            indicators = self.data_collector.calculate_indicators(symbol)
+            indicators = self.feed.indicators(symbol)
             if not indicators:
                 skipped_symbols[symbol] = "No indicators calculated"
                 continue
@@ -623,7 +461,7 @@ class HistoricalSimulator:
             # Get current prices for final P&L calculation
             current_prices = {}
             for symbol in self.config.symbols:
-                data = self.data_collector.get_current_data(symbol)
+                data = self.feed.current(symbol)
                 if data:
                     current_prices[symbol] = data.close
             
@@ -666,8 +504,8 @@ class HistoricalSimulator:
     
     def close(self):
         """Clean up resources"""
-        if self.data_provider:
-            self.data_provider.close()
+        if self.source:
+            self.source.close()
 
 
 
@@ -773,8 +611,8 @@ def main():
     print("=" * 60)
 
     symbols = args.symbols or SYMBOLS
-    provider = HistoricalDataProvider(DB_PATH, args.interval)
-    available_start, available_end = provider.get_data_range(symbols)
+    provider = DatabaseSource(DB_PATH, args.interval)
+    available_start, available_end = provider.date_range(symbols)
     provider.close()
 
     if not available_start:
