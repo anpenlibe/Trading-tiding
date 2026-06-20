@@ -1,110 +1,39 @@
-"""Paper-trading executor — simulates fills, positions, and performance.
+"""Paper-trading executor — computes simulated fills and records them in a Portfolio.
 
-Implements BaseTradingExecutor. Models commission and slippage, manages one
-open position per symbol, auto-closes on stop-loss/target, and tracks realized/
-unrealized P&L plus performance metrics (win rate, drawdown, profit factor).
+Implements BaseTradingExecutor. Models commission (turnover-based Indian-equity
+charges + optional flat fee) and slippage, opens one position per symbol, and
+auto-closes on stop-loss/target. All account STATE (cash, positions, P&L, metrics,
+persistence) lives in ``src/portfolio/book.py``; this class only decides fills and
+records them via ``self.book``. The read methods delegate to the book, so a future
+live executor can reuse the same Portfolio unchanged.
 
 Entry points: ``execute_trade(signal, price)`` is the signal-based path the AI
 pipeline uses; ``execute_simple_trade(...)`` and the contract ``place_order(...)``
 are thin convenience wrappers over it.
 """
 
-import os
-import json
 from datetime import datetime
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass, asdict
-import pandas as pd
+from typing import Dict, Optional, Any
 
 from src.platform.types import BaseTradingExecutor
 from src.platform.config import (
     INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE, TRADING_PRODUCT,
-    EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
+    EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT,
 )
 from src.execution.costs import compute_charges
+from src.portfolio.book import Portfolio, PaperTrade
 from src.platform.logger import setup_logger
 from src.monitoring.performance import performance_tracker
 
-# Initialize logger
 logger = setup_logger(__name__, 'paper_trader.log')
 
 
-@dataclass
-class PaperTrade:
-    """Structure for paper trade records"""
-    trade_id: str
-    timestamp: str
-    symbol: str
-    action: str  # BUY, SELL
-    quantity: int
-    entry_price: float
-    current_price: float
-    stop_loss: Optional[float]
-    target: Optional[float]
-    commission: float
-    slippage: float
-    position_value: float
-
-    # Decision context
-    signal_strength: float
-    confidence: float
-    reasoning: str
-    indicators: Dict[str, float]
-
-    # Status (required field)
-    status: str  # OPEN, CLOSED
-
-    # Emergency thresholds (percentages from entry price)
-    emergency_stop_loss_pct: float = EMERGENCY_STOP_LOSS_PCT  # Configurable default
-    emergency_take_profit_pct: float = EMERGENCY_TAKE_PROFIT_PCT  # Configurable default
-    emergency_recheck_pct: float = EMERGENCY_RECHECK_PCT  # Configurable default
-    ai_monitoring_comment: Optional[str] = None  # AI's reason for monitoring
-    exit_price: Optional[float] = None
-    exit_timestamp: Optional[str] = None
-    exit_reason: Optional[str] = None  # TARGET_HIT, STOP_LOSS, MANUAL
-    
-    # P&L
-    realized_pnl: Optional[float] = None
-    unrealized_pnl: Optional[float] = None
-    pnl_percent: Optional[float] = None
-
-
 class PaperTrader(BaseTradingExecutor):
-    """
-    Paper trading implementation for strategy testing.
-    
-    Simulates real trading conditions including commissions,
-    slippage, and position management.
-    """
-    
+    """Paper-trading executor: simulates fills against a Portfolio book."""
+
     def __init__(self, initial_capital: float = INITIAL_CAPITAL):
-        """Initialize paper trader with starting capital"""
-        self.initial_capital = initial_capital
-        self.current_capital = initial_capital
-        self.available_capital = initial_capital
-        
-        # Positions tracking
-        self.open_positions: Dict[str, PaperTrade] = {}
-        self.closed_trades: List[PaperTrade] = []
-        self.all_trades: List[PaperTrade] = []
-        
-        # Performance tracking
-        self.total_trades = 0
-        self.winning_trades = 0
-        self.losing_trades = 0
-        self.total_commission = 0.0
-        self.peak_capital = initial_capital
-        self.max_drawdown = 0.0
-        
-        # Initialize trade log
-        self.trade_log_file = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 
-            'data', 'logs', 'paper_trades.json'
-        )
-        os.makedirs(os.path.dirname(self.trade_log_file), exist_ok=True)
-        
-        logger.info(f"Paper Trader initialized with capital: ₹{initial_capital}")
-    
+        self.book = Portfolio(initial_capital)
+
     def place_order(self, symbol: str, quantity: int, order_type: str,
                     price: Optional[float] = None) -> Dict[str, Any]:
         """BaseTradingExecutor entry point — a paper fill needs an explicit price.
@@ -115,19 +44,10 @@ class PaperTrader(BaseTradingExecutor):
         if price is None:
             return {"status": "REJECTED", "reason": "Paper trading requires an explicit fill price"}
         return self.execute_simple_trade(symbol, order_type, price, quantity)
-    
+
     @performance_tracker("trade_execution")
     def execute_trade(self, signal: Dict[str, Any], current_price: float) -> Dict[str, Any]:
-        """
-        Execute a paper trade based on AI signal.
-        
-        Args:
-            signal: Trading signal from AI Brain
-            current_price: Current market price
-            
-        Returns:
-            Trade execution details
-        """
+        """Execute a paper trade based on an AI signal."""
         try:
             symbol = signal.get('symbol')
             action = signal.get('signal')  # BUY, SELL, HOLD
@@ -137,67 +57,33 @@ class PaperTrader(BaseTradingExecutor):
             if not symbol:
                 return {"status": "REJECTED", "reason": "Signal missing 'symbol'"}
 
-            # Skip if HOLD signal
             if action == 'HOLD':
-                return {
-                    "status": "SKIPPED",
-                    "reason": "HOLD signal - no action taken"
-                }
-            
-            # Calculate execution price with slippage
+                return {"status": "SKIPPED", "reason": "HOLD signal - no action taken"}
+
+            # Execution price with slippage
             slippage_amount = current_price * PAPER_TRADE_SLIPPAGE
-            if action == 'BUY':
-                execution_price = current_price + slippage_amount
-            else:
-                execution_price = current_price - slippage_amount
-            
-            # Get position details from signal
+            execution_price = current_price + slippage_amount if action == 'BUY' else current_price - slippage_amount
+
             quantity = signal.get('position_size', 1)
             stop_loss = signal.get('stop_loss')
             target = signal.get('target')
-            
-            # Validate trade
-            validation = self._validate_trade(
-                symbol, action, quantity, execution_price
-            )
+
+            validation = self._validate_trade(symbol, action, quantity, execution_price)
             if not validation['valid']:
-                return {
-                    "status": "REJECTED",
-                    "reason": validation['reason']
-                }
-            
-            # Execute based on action
+                return {"status": "REJECTED", "reason": validation['reason']}
+
             if action == 'BUY':
-                return self._execute_buy(
-                    symbol, quantity, execution_price, 
-                    stop_loss, target, signal
-                )
+                return self._execute_buy(symbol, quantity, execution_price, stop_loss, target, signal)
             elif action == 'SELL':
-                return self._execute_sell(
-                    symbol, quantity, execution_price, signal
-                )
-            
+                return self._execute_sell(symbol, quantity, execution_price, signal)
+
         except Exception as e:
             logger.error(f"Error executing trade: {e}")
             return {"status": "ERROR", "message": str(e)}
-   
+
     def execute_simple_trade(self, symbol: str, action: str, price: float, quantity: int = 1,
                              stop_loss: Optional[float] = None, target: Optional[float] = None) -> Dict[str, Any]:
-        """
-        Execute a simple trade (for testing and manual trading).
-    
-        Args:
-            symbol: Stock symbol
-            action: BUY or SELL
-            price: Current price
-            quantity: Number of shares
-            stop_loss: Stop loss price
-            target: Target price
-        
-        Returns:
-            Trade execution result
-        """
-        # Create a signal-like dictionary
+        """Execute a simple trade (for testing and manual trading)."""
         signal = {
             'symbol': symbol,
             'signal': action.upper(),
@@ -206,47 +92,31 @@ class PaperTrader(BaseTradingExecutor):
             'target': target,
             'confidence': 1.0,
             'reasoning': 'Manual/Test trade',
-            'indicators': {}
+            'indicators': {},
         }
-    
         return self.execute_trade(signal, price)
 
     def _execute_buy(self, symbol: str, quantity: int, price: float,
                      stop_loss: Optional[float], target: Optional[float],
                      signal: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a BUY order"""
-        # Check if already have position
-        if symbol in self.open_positions:
-            return {
-                "status": "REJECTED",
-                "reason": "Already have open position in this symbol"
-            }
-        
-        # Calculate costs. Charges are levied on the actual fill turnover
-        # (price already includes slippage); PAPER_TRADE_COMMISSION is an
-        # optional extra flat fee (default 0).
+        """Compute a BUY fill and record it in the book."""
+        if symbol in self.book.open_positions:
+            return {"status": "REJECTED", "reason": "Already have open position in this symbol"}
+
+        # Charges are levied on the actual fill turnover (price already includes
+        # slippage); PAPER_TRADE_COMMISSION is an optional extra flat fee (default 0).
         position_value = quantity * price
         commission = compute_charges(position_value, "BUY", TRADING_PRODUCT) + PAPER_TRADE_COMMISSION
         total_cost = position_value + commission
-        
-        # Check capital
-        if total_cost > self.available_capital:
-            return {
-                "status": "REJECTED",
-                "reason": f"Insufficient capital. Need ₹{total_cost:.2f}, have ₹{self.available_capital:.2f}"
-            }
-        
-        # Extract emergency thresholds from signal
-        emergency_thresholds = signal.get('emergency_thresholds', {})
-        emergency_stop_loss_pct = emergency_thresholds.get('stop_loss_pct', EMERGENCY_STOP_LOSS_PCT)
-        emergency_take_profit_pct = emergency_thresholds.get('take_profit_pct', EMERGENCY_TAKE_PROFIT_PCT)
-        emergency_recheck_pct = emergency_thresholds.get('recheck_trigger_pct', EMERGENCY_RECHECK_PCT)
-        ai_comment = emergency_thresholds.get('comment')
 
-        # Create trade record
-        trade_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{symbol}_BUY"
+        if total_cost > self.book.available_capital:
+            return {"status": "REJECTED",
+                    "reason": f"Insufficient capital. Need ₹{total_cost:.2f}, have ₹{self.book.available_capital:.2f}"}
+
+        # Emergency thresholds from the signal (AI-revisable per cycle).
+        emergency = signal.get('emergency_thresholds', {})
         trade = PaperTrade(
-            trade_id=trade_id,
+            trade_id=f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{symbol}_BUY",
             timestamp=datetime.now().isoformat(),
             symbol=symbol,
             action="BUY",
@@ -258,361 +128,113 @@ class PaperTrader(BaseTradingExecutor):
             commission=commission,
             slippage=price * PAPER_TRADE_SLIPPAGE,
             position_value=position_value,
-            emergency_stop_loss_pct=emergency_stop_loss_pct,
-            emergency_take_profit_pct=emergency_take_profit_pct,
-            emergency_recheck_pct=emergency_recheck_pct,
-            ai_monitoring_comment=ai_comment,
+            emergency_stop_loss_pct=emergency.get('stop_loss_pct', EMERGENCY_STOP_LOSS_PCT),
+            emergency_take_profit_pct=emergency.get('take_profit_pct', EMERGENCY_TAKE_PROFIT_PCT),
+            emergency_recheck_pct=emergency.get('recheck_trigger_pct', EMERGENCY_RECHECK_PCT),
+            ai_monitoring_comment=emergency.get('comment'),
             signal_strength=signal.get('signal_strength', 0),
             confidence=signal.get('confidence', 0),
             reasoning=signal.get('reasoning', ''),
             indicators=signal.get('indicators', {}),
             status="OPEN",
             unrealized_pnl=0.0,
-            pnl_percent=0.0
+            pnl_percent=0.0,
         )
-        
-        # Update capital and positions
-        self.available_capital -= total_cost
-        self.total_commission += commission
-        self.open_positions[symbol] = trade
-        self.all_trades.append(trade)
-        self.total_trades += 1
-        self._recompute_capital()  # keep current_capital/drawdown current post-buy
 
-        # Log trade
-        self._log_trade(trade)
-        
+        self.book.open(trade, total_cost)
         logger.info(f"BUY executed: {symbol} x{quantity} @ ₹{price:.2f}")
-        
         return {
-            "status": "EXECUTED",
-            "trade_id": trade_id,
-            "action": "BUY",
-            "symbol": symbol,
-            "quantity": quantity,
-            "price": price,
-            "commission": commission,
-            "total_cost": total_cost,
-            "stop_loss": stop_loss,
-            "target": target
+            "status": "EXECUTED", "trade_id": trade.trade_id, "action": "BUY",
+            "symbol": symbol, "quantity": quantity, "price": price,
+            "commission": commission, "total_cost": total_cost,
+            "stop_loss": stop_loss, "target": target,
         }
-    
+
     def _execute_sell(self, symbol: str, quantity: int, price: float,
                       signal: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute a SELL order"""
-        # Check if have position
-        if symbol not in self.open_positions:
-            return {
-                "status": "REJECTED",
-                "reason": "No open position to sell"
-            }
-        
-        position = self.open_positions[symbol]
+        """Compute a SELL fill (full close) and record it in the book."""
+        if symbol not in self.book.open_positions:
+            return {"status": "REJECTED", "reason": "No open position to sell"}
 
-        # A SELL closes the whole position. The requested quantity from an AI
-        # SELL is unreliable (it's sized as if opening), and partial exits don't
-        # fit the one-record-per-position model, so exit in full — consistent
-        # with the stop-loss / target auto-closes.
+        position = self.book.open_positions[symbol]
+        # A SELL closes the whole position. The requested quantity from an AI SELL
+        # is unreliable (sized as if opening) and partial exits don't fit the
+        # one-record-per-position model, so exit in full — consistent with the
+        # stop-loss / target auto-closes.
         quantity = position.quantity
-        
-        # Calculate proceeds and P&L. Sell-side charges differ from buy-side
-        # (delivery STT both sides, DP charge on delivery sells, no stamp duty).
+
+        # Sell-side charges differ from buy-side (delivery STT both sides, DP charge
+        # on delivery sells, no stamp duty).
         gross_proceeds = quantity * price
         commission = compute_charges(gross_proceeds, "SELL", TRADING_PRODUCT) + PAPER_TRADE_COMMISSION
         net_proceeds = gross_proceeds - commission
-        
-        # Calculate P&L
-        cost_basis = position.entry_price * quantity
-        realized_pnl = net_proceeds - cost_basis - position.commission
-        pnl_percent = (realized_pnl / cost_basis) * 100
-        
-        # Update position
-        position.exit_price = price
-        position.exit_timestamp = datetime.now().isoformat()
-        position.exit_reason = signal.get('exit_reason', 'SIGNAL')
-        position.realized_pnl = realized_pnl
-        position.pnl_percent = pnl_percent
-        position.status = "CLOSED"
-        
-        # Update capital and tracking
-        self.available_capital += net_proceeds
-        self.total_commission += commission
 
-        # Track wins/losses
-        if realized_pnl > 0:
-            self.winning_trades += 1
-        else:
-            self.losing_trades += 1
+        result = self.book.close(symbol, price, net_proceeds, commission,
+                                 exit_reason=signal.get('exit_reason', 'SIGNAL'))
 
-        # Move to closed trades, then recompute capital. Must happen AFTER the
-        # del, else the closed position is double-counted (its proceeds are
-        # already in available_capital).
-        self.closed_trades.append(position)
-        del self.open_positions[symbol]
-        self._recompute_capital()
-
-        # Log trade
-        self._log_trade(position)
-        
         logger.info(
             f"SELL executed: {symbol} x{quantity} @ ₹{price:.2f} "
-            f"P&L: ₹{realized_pnl:.2f} ({pnl_percent:+.2f}%)"
+            f"P&L: ₹{result['realized_pnl']:.2f} ({result['pnl_percent']:+.2f}%)"
         )
-        
         return {
-            "status": "EXECUTED",
-            "trade_id": position.trade_id,
-            "action": "SELL",
-            "symbol": symbol,
-            "quantity": quantity,
-            "price": price,
+            "status": "EXECUTED", "trade_id": position.trade_id, "action": "SELL",
+            "symbol": symbol, "quantity": quantity, "price": price,
             "commission": commission,
-            "realized_pnl": realized_pnl,
-            "pnl_percent": pnl_percent
+            "realized_pnl": result['realized_pnl'], "pnl_percent": result['pnl_percent'],
         }
-    
+
     def update_positions(self, current_prices: Dict[str, float]):
-        """Update unrealized P&L for open positions"""
-        # Iterate over a copy: a stop-loss / target hit below calls _execute_sell,
-        # which deletes from self.open_positions (can't mutate during iteration).
-        for symbol, position in list(self.open_positions.items()):
-            if symbol in current_prices:
-                current_price = current_prices[symbol]
-                position.current_price = current_price
-                
-                # Calculate unrealized P&L
-                current_value = position.quantity * current_price
-                cost_basis = position.quantity * position.entry_price
-                position.unrealized_pnl = current_value - cost_basis - position.commission
-                position.pnl_percent = (position.unrealized_pnl / cost_basis) * 100
-                
-                # Check stop loss
-                if position.stop_loss and current_price <= position.stop_loss:
-                    logger.warning(f"Stop loss triggered for {symbol}")
-                    self._execute_sell(symbol, position.quantity, current_price, 
-                                     {"exit_reason": "STOP_LOSS"})
-                
-                # Check target
-                elif position.target and current_price >= position.target:
-                    logger.info(f"Target reached for {symbol}")
-                    self._execute_sell(symbol, position.quantity, current_price,
-                                     {"exit_reason": "TARGET_HIT"})
-
-        self._recompute_capital()
-    
-    def get_positions(self) -> Dict[str, Any]:
-        """Get current positions and their status"""
-        positions = {}
-        
-        for symbol, position in self.open_positions.items():
-            positions[symbol] = {
-                "quantity": position.quantity,
-                "entry_price": position.entry_price,
-                "current_price": position.current_price,
-                "unrealized_pnl": position.unrealized_pnl,
-                "pnl_percent": position.pnl_percent,
-                "stop_loss": position.stop_loss,
-                "target": position.target,
-                "entry_time": position.timestamp
-            }
-        
-        return positions
-    
-    def has_position(self, symbol: str) -> bool:
-        """Checks if an open position exists for the given symbol."""
-        return symbol in self.open_positions and self.open_positions[symbol].quantity > 0
-    
-    def get_account_info(self) -> Dict[str, Any]:
-        """Get account information and performance metrics"""
-        total_value = self.current_capital
-        
-        # Calculate returns
-        total_return = (total_value - self.initial_capital) / self.initial_capital * 100
-        
-        # Win rate
-        total_closed = len(self.closed_trades)
-        win_rate = (self.winning_trades / total_closed * 100) if total_closed > 0 else 0
-        
-        # Average P&L
-        if self.closed_trades:
-            avg_pnl = sum(t.realized_pnl for t in self.closed_trades) / len(self.closed_trades)
-            avg_win = sum(t.realized_pnl for t in self.closed_trades if t.realized_pnl > 0) / self.winning_trades if self.winning_trades > 0 else 0
-            avg_loss = sum(t.realized_pnl for t in self.closed_trades if t.realized_pnl < 0) / self.losing_trades if self.losing_trades > 0 else 0
-        else:
-            avg_pnl = avg_win = avg_loss = 0
-        
-        return {
-            "initial_capital": self.initial_capital,
-            "current_capital": self.current_capital,
-            "available_capital": self.available_capital,
-            "total_value": total_value,
-            "total_return": total_return,
-            "peak_capital": self.peak_capital,
-            "max_drawdown": self.max_drawdown * 100,
-            "total_trades": self.total_trades,
-            "open_positions": len(self.open_positions),
-            "closed_trades": total_closed,
-            "winning_trades": self.winning_trades,
-            "losing_trades": self.losing_trades,
-            "win_rate": win_rate,
-            "total_commission": self.total_commission,
-            "avg_pnl": avg_pnl,
-            "avg_win": avg_win,
-            "avg_loss": avg_loss
-        }
-    
-    def _recompute_capital(self):
-        """Recompute current_capital = cash + mark-to-market value of open
-        positions, then refresh peak capital and max drawdown.
-
-        Called after every buy, sell, and price update so account metrics
-        (including drawdown) stay current — not just at sell time.
-        """
-        self.current_capital = self.available_capital + sum(
-            pos.quantity * pos.current_price for pos in self.open_positions.values()
-        )
-        if self.current_capital > self.peak_capital:
-            self.peak_capital = self.current_capital
-        drawdown = (self.peak_capital - self.current_capital) / self.peak_capital
-        if drawdown > self.max_drawdown:
-            self.max_drawdown = drawdown
+        """Mark positions to market, then auto-close any that hit stop-loss/target."""
+        self.book.mark_to_market(current_prices)
+        # Iterate a copy: _execute_sell deletes from open_positions.
+        for symbol, position in list(self.book.open_positions.items()):
+            price = current_prices.get(symbol)
+            if price is None:
+                continue
+            if position.stop_loss and price <= position.stop_loss:
+                logger.warning(f"Stop loss triggered for {symbol}")
+                self._execute_sell(symbol, position.quantity, price, {"exit_reason": "STOP_LOSS"})
+            elif position.target and price >= position.target:
+                logger.info(f"Target reached for {symbol}")
+                self._execute_sell(symbol, position.quantity, price, {"exit_reason": "TARGET_HIT"})
 
     def _validate_trade(self, symbol: str, action: str, quantity: int, price: float) -> Dict[str, Any]:
-        """Validate trade parameters before execution."""
+        """Validate trade parameters before execution (reads book state)."""
         try:
-            # Basic validations
             if quantity <= 0:
                 return {"valid": False, "reason": "Invalid quantity - insufficient capital for position"}
-        
             if price <= 0:
                 return {"valid": False, "reason": "Invalid price"}
-        
-            # Check for BUY orders
+
             if action == 'BUY':
-                position_value = quantity * price
-                commission = PAPER_TRADE_COMMISSION
-                total_cost = position_value + commission
-            
-                if total_cost > self.available_capital:
-                    return {
-                        "valid": False, 
-                        "reason": f"Insufficient capital. Need ₹{total_cost:.2f}, have ₹{self.available_capital:.2f}"
-                    }
-            
-                # Check if already have position
-                if symbol in self.open_positions:
-                    return {
-                        "valid": False,
-                        "reason": "Already have open position in this symbol"
-                }
-        
-            # Check for SELL orders
+                total_cost = quantity * price + PAPER_TRADE_COMMISSION
+                if total_cost > self.book.available_capital:
+                    return {"valid": False,
+                            "reason": f"Insufficient capital. Need ₹{total_cost:.2f}, have ₹{self.book.available_capital:.2f}"}
+                if symbol in self.book.open_positions:
+                    return {"valid": False, "reason": "Already have open position in this symbol"}
+
             elif action == 'SELL':
-                if symbol not in self.open_positions:
-                    return {
-                        "valid": False,
-                        "reason": "No open position to sell"
-                    }
-            
-                position = self.open_positions[symbol]
-                if quantity > position.quantity:
-                    return {
-                        "valid": False,
-                        "reason": f"Cannot sell {quantity} shares, only have {position.quantity}"
-                    }
-        
+                if symbol not in self.book.open_positions:
+                    return {"valid": False, "reason": "No open position to sell"}
+                if quantity > self.book.open_positions[symbol].quantity:
+                    return {"valid": False,
+                            "reason": f"Cannot sell {quantity} shares, only have {self.book.open_positions[symbol].quantity}"}
+
             return {"valid": True, "reason": "OK"}
-        
         except Exception as e:
             return {"valid": False, "reason": f"Validation error: {str(e)}"}
 
-    
-    def _log_trade(self, trade: PaperTrade):
-        """Log trade to file"""
-        try:
-            with open(self.trade_log_file, 'a') as f:
-                f.write(json.dumps(asdict(trade), default=str) + '\n')
-        except Exception as e:
-            logger.error(f"Error logging trade: {e}")
-    
+    # ----- read APIs delegate to the portfolio book -----
+
+    def get_positions(self) -> Dict[str, Any]:
+        return self.book.get_positions()
+
+    def has_position(self, symbol: str) -> bool:
+        return self.book.has_position(symbol)
+
+    def get_account_info(self) -> Dict[str, Any]:
+        return self.book.get_account_info()
+
     def generate_performance_report(self) -> Dict[str, Any]:
-        """Generate detailed performance report"""
-        account_info = self.get_account_info()
-        
-        # Add additional metrics
-        report = {
-            **account_info,
-            "report_timestamp": datetime.now().isoformat(),
-            "trading_days": len(set(t.timestamp[:10] for t in self.all_trades)),
-            "best_trade": max((t.realized_pnl for t in self.closed_trades), default=0),
-            "worst_trade": min((t.realized_pnl for t in self.closed_trades), default=0),
-            "consecutive_wins": self._calculate_consecutive_wins(),
-            "consecutive_losses": self._calculate_consecutive_losses(),
-            "sharpe_ratio": self._calculate_sharpe_ratio(),
-            "profit_factor": self._calculate_profit_factor()
-        }
-        
-        return report
-    
-    def _calculate_consecutive_wins(self) -> int:
-        """Calculate maximum consecutive winning trades"""
-        if not self.closed_trades:
-            return 0
-        
-        max_wins = current_wins = 0
-        for trade in self.closed_trades:
-            if trade.realized_pnl > 0:
-                current_wins += 1
-                max_wins = max(max_wins, current_wins)
-            else:
-                current_wins = 0
-        
-        return max_wins
-    
-    def _calculate_consecutive_losses(self) -> int:
-        """Calculate maximum consecutive losing trades"""
-        if not self.closed_trades:
-            return 0
-        
-        max_losses = current_losses = 0
-        for trade in self.closed_trades:
-            if trade.realized_pnl < 0:
-                current_losses += 1
-                max_losses = max(max_losses, current_losses)
-            else:
-                current_losses = 0
-        
-        return max_losses
-    
-    def _calculate_sharpe_ratio(self) -> float:
-        """Calculate Sharpe ratio (simplified)"""
-        if not self.closed_trades:
-            return 0.0
-        
-        returns = [t.pnl_percent for t in self.closed_trades]
-        if len(returns) < 2:
-            return 0.0
-        
-        avg_return = sum(returns) / len(returns)
-        std_return = pd.Series(returns).std()
-        
-        if std_return == 0:
-            return 0.0
-        
-        # Assuming risk-free rate of 6% annually, converted to per-trade
-        risk_free_rate = 0.06 / 252 / 78  # Assuming 78 trades per day
-        
-        return (avg_return - risk_free_rate) / std_return
-    
-    def _calculate_profit_factor(self) -> float:
-        """Calculate profit factor (gross profit / gross loss)"""
-        gross_profit = sum(t.realized_pnl for t in self.closed_trades if t.realized_pnl > 0)
-        gross_loss = abs(sum(t.realized_pnl for t in self.closed_trades if t.realized_pnl < 0))
-        
-        if gross_loss == 0:
-            return float('inf') if gross_profit > 0 else 0.0
-        
-        return gross_profit / gross_loss
-
-
-
+        return self.book.generate_performance_report()
