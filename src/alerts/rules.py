@@ -1,8 +1,8 @@
 """Predefined alert rules."""
 
 from typing import Dict, Any
-from src.alerts.alert_engine import AlertRule, AlertType
-from src.data.config import RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD
+from src.alerts.engine import AlertRule, AlertType
+from src.platform.config import RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD
 
 
 class PriceCrossRule(AlertRule):

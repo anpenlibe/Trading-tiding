@@ -1,7 +1,7 @@
 """Performance monitoring dashboard."""
 
 from src.monitoring.performance import get_monitor
-from src.utils.db_optimizer import DatabaseOptimizer
+from src.marketdata.maintenance import DatabaseOptimizer
 
 
 def display_performance_dashboard():

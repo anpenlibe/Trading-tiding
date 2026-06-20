@@ -6,7 +6,7 @@ import functools
 from datetime import datetime
 from typing import Dict, Any, Callable
 from collections import deque
-from src.utils.logger import setup_logger
+from src.platform.logger import setup_logger
 
 logger = setup_logger(__name__, 'performance.log')
 
