@@ -20,27 +20,9 @@ from src.decision.clients.gemini_client import GeminiClient
 from src.decision.clients.groq_client import GroqClient
 from src.platform.logger import setup_logger
 from src.platform.errors import AIAnalysisError
+from src.decision.keys import collect_provider_keys
 
 logger = setup_logger(__name__, 'provider_coordinator.log')
-
-
-def _collect_provider_keys(prefix: str) -> List[str]:
-    """Collect API keys for a provider from the environment.
-
-    Supports a numbered pool: a singular ``PREFIX_API_KEY`` plus
-    ``PREFIX_API_KEY_1``, ``PREFIX_API_KEY_2``, ... (the live .env carries 4 Groq
-    + 4 Gemini keys this way). Returns real keys in order — singular first, then
-    numbered ascending — de-duplicated, with blanks/placeholders dropped.
-    """
-    names = [f"{prefix}_API_KEY"] + [f"{prefix}_API_KEY_{i}" for i in range(1, 11)]
-    keys: List[str] = []
-    seen = set()
-    for n in names:
-        val = (os.getenv(n) or "").strip()
-        if val and not val.startswith("your-") and val not in seen:
-            seen.add(val)
-            keys.append(val)
-    return keys
 
 
 class ProviderConfig:
@@ -123,7 +105,7 @@ class ProviderCoordinator:
         # from a numbered pool in .env (GROQ_API_KEY_1..N). Phase 1 uses the first
         # available key — full per-call cycling across the pool is a later phase.
         # Without this, the absent singular GROQ_API_KEY silently dropped Groq.
-        groq_keys = _collect_provider_keys("GROQ")
+        groq_keys = collect_provider_keys("GROQ")
         if groq_keys and "groq" in enabled:
             groq_key = groq_keys[0]
             # Primary: gpt-oss-120b - best quality, native JSON, 8K TPM / 200K TPD
@@ -154,7 +136,7 @@ class ProviderCoordinator:
             # Not included in production - 3 Groq models provide sufficient coverage
 
         # Gemini Pro (reliable but slower). Same numbered-pool handling as Groq.
-        gemini_keys = _collect_provider_keys("GEMINI")
+        gemini_keys = collect_provider_keys("GEMINI")
         if gemini_keys and "gemini" in enabled:
             gemini_key = gemini_keys[0]
             chain.append(ProviderConfig(

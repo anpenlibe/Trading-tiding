@@ -15,6 +15,7 @@ import json
 from src.platform.types import BaseDecisionModel, MarketData
 from src.decision.prompts import PromptBuilder
 from src.decision.providers import ProviderCoordinator
+from src.decision.fallback import rule_based_decision, rule_based_portfolio
 from src.risk.manager import SimpleRiskManager
 from src.platform.config import INITIAL_CAPITAL, MAX_DECISION_HISTORY
 from src.platform.logger import setup_logger
@@ -95,7 +96,7 @@ class AIBrain(BaseDecisionModel):
                 logger.warning(
                     f"AI circuit breaker open ({self.consecutive_failures} failures) - using rule-based fallback"
                 )
-                return self._fallback_analysis(latest_data, indicators)
+                return rule_based_decision(latest_data, indicators)
 
             # Build context
             context = {
@@ -118,7 +119,7 @@ class AIBrain(BaseDecisionModel):
                 # circuit breaker (max_consecutive_failures) can escalate.
                 self.consecutive_failures += 1
                 logger.warning(f"AI response failed, using rule-based fallback: {e}")
-                return self._fallback_analysis(latest_data, indicators)
+                return rule_based_decision(latest_data, indicators)
 
             # Parse response
             try:
@@ -225,35 +226,6 @@ class AIBrain(BaseDecisionModel):
             'confidence': 0.0,
             'reasoning': f'Safety mode: {reason}',
             'entry_price': None,
-            'stop_loss': None,
-            'target': None,
-            'position_size': None,
-            'risk_amount': None
-        }
-    
-    def _fallback_analysis(self, market_data: MarketData, 
-                          indicators: Dict[str, float]) -> Dict[str, Any]:
-        """Simple rule-based fallback when AI is unavailable."""
-        signal = 'HOLD'
-        confidence = 0.3
-        reasoning = "Fallback rule-based analysis"
-        
-        # Simple RSI-based rules
-        rsi = indicators.get('rsi_14', 50)
-        if rsi < 30:
-            signal = 'BUY'
-            confidence = 0.4
-            reasoning = f"Oversold condition (RSI={rsi:.1f})"
-        elif rsi > 70:
-            signal = 'SELL'
-            confidence = 0.4
-            reasoning = f"Overbought condition (RSI={rsi:.1f})"
-        
-        return {
-            'signal': signal,
-            'confidence': confidence,
-            'reasoning': reasoning,
-            'entry_price': market_data.close,
             'stop_loss': None,
             'target': None,
             'position_size': None,
@@ -370,7 +342,7 @@ class AIBrain(BaseDecisionModel):
                 logger.warning(
                     f"AI circuit breaker open ({self.consecutive_failures} failures) - using rule-based portfolio fallback"
                 )
-                return self._fallback_portfolio_analysis(portfolio_data, portfolio_indicators)
+                return rule_based_portfolio(portfolio_data, portfolio_indicators)
 
             # Build comprehensive portfolio prompt
             prompt = self.prompt_builder.create_portfolio_analysis_prompt(
@@ -384,7 +356,7 @@ class AIBrain(BaseDecisionModel):
                 # Coordinator handles all fallback internally, if we get here all providers failed
                 logger.error(f"All AI providers failed for portfolio analysis: {type(e).__name__}: {e}")
                 self.consecutive_failures += 1
-                return self._fallback_portfolio_analysis(portfolio_data, portfolio_indicators)
+                return rule_based_portfolio(portfolio_data, portfolio_indicators)
 
             # Parse portfolio response
             try:
@@ -458,34 +430,5 @@ class AIBrain(BaseDecisionModel):
             'market_analysis': f'Default analysis due to: {reason}',
             'decisions': decisions,
             'symbols_analyzed': len(symbols)
-        }
-
-    def _fallback_portfolio_analysis(self, portfolio_data: Dict[str, pd.DataFrame],
-                                   portfolio_indicators: Dict[str, Dict[str, float]]) -> Dict[str, Any]:
-        """Fallback portfolio analysis using simple rules."""
-        decisions = {}
-
-        for symbol, data in portfolio_data.items():
-            if symbol in portfolio_indicators:
-                # Use existing single-symbol fallback
-                market_data_obj = MarketData(
-                    symbol=symbol,
-                    timestamp=pd.Timestamp.now(),
-                    open=float(data['open'].iloc[-1]),
-                    high=float(data['high'].iloc[-1]),
-                    low=float(data['low'].iloc[-1]),
-                    close=float(data['close'].iloc[-1]),
-                    volume=float(data['volume'].iloc[-1])
-                )
-                decisions[symbol] = self._fallback_analysis(
-                    market_data_obj, portfolio_indicators[symbol]
-                )
-
-        # Return the wrapped shape every caller expects ({'decisions': ...}),
-        # not a bare {symbol: decision} map.
-        return {
-            'market_analysis': 'Rule-based fallback (all AI providers unavailable)',
-            'decisions': decisions,
-            'symbols_analyzed': len(decisions),
         }
 
