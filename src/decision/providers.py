@@ -20,7 +20,7 @@ from src.decision.clients.gemini_client import GeminiClient
 from src.decision.clients.groq_client import GroqClient
 from src.platform.logger import setup_logger
 from src.platform.errors import AIAnalysisError
-from src.decision.keys import collect_provider_keys
+from src.decision.keys import provider_keys
 
 logger = setup_logger(__name__, 'provider_coordinator.log')
 
@@ -29,7 +29,7 @@ class ProviderConfig:
     """Configuration for a single provider in the fallback chain."""
 
     def __init__(self, provider: str, model: str, max_tokens: int,
-                 api_key: Optional[str] = None):
+                 api_key: Optional[str] = None, key_id: int = 0):
         """Initialize provider configuration.
 
         Args:
@@ -37,14 +37,17 @@ class ProviderConfig:
             model: Model identifier
             max_tokens: Maximum tokens for responses
             api_key: Optional API key override
+            key_id: Index of this config's key within the provider's pool, so the
+                same model on different keys cools/cycles independently.
         """
         self.provider = provider
         self.model = model
         self.max_tokens = max_tokens
         self.api_key = api_key
+        self.key_id = key_id
 
     def __repr__(self):
-        return f"ProviderConfig({self.provider}:{self.model})"
+        return f"ProviderConfig({self.provider}:{self.model}#{self.key_id})"
 
 
 class ProviderCoordinator:
@@ -85,71 +88,16 @@ class ProviderCoordinator:
             logger.info(f"  [{idx}] {config}")
 
     def _get_default_fallback_chain(self) -> List[ProviderConfig]:
-        """Get default fallback chain from environment configuration.
+        """Default when no chain is supplied: the single-symbol chain in backtest
+        mode. AIBrain normally builds explicit portfolio/symbol chains instead."""
+        return build_symbol_chain("backtest")
 
-        Returns:
-            List of provider configurations
-        """
-        chain = []
-
-        # Provider allowlist: a provider is added only if its API key is present
-        # AND it appears in ENABLED_AI_PROVIDERS (comma-separated, default all).
-        # e.g. set ENABLED_AI_PROVIDERS=groq to disable Gemini.
-        enabled = {
-            p.strip().lower()
-            for p in os.getenv("ENABLED_AI_PROVIDERS", "groq,gemini").split(",")
-            if p.strip()
-        }
-
-        # Groq models (each has independent rate limits per model). Keys come
-        # from a numbered pool in .env (GROQ_API_KEY_1..N). Phase 1 uses the first
-        # available key — full per-call cycling across the pool is a later phase.
-        # Without this, the absent singular GROQ_API_KEY silently dropped Groq.
-        groq_keys = collect_provider_keys("GROQ")
-        if groq_keys and "groq" in enabled:
-            groq_key = groq_keys[0]
-            # Primary: gpt-oss-120b - best quality, native JSON, 8K TPM / 200K TPD
-            chain.append(ProviderConfig(
-                provider="groq",
-                model="openai/gpt-oss-120b",
-                max_tokens=6000,
-                api_key=groq_key
-            ))
-
-            # Secondary: llama-3.3-70b - proven reliable, 6K TPM / 100K TPD
-            chain.append(ProviderConfig(
-                provider="groq",
-                model="llama-3.3-70b-versatile",
-                max_tokens=6000,
-                api_key=groq_key
-            ))
-
-            # Tertiary: gpt-oss-20b - fast fallback, 8K TPM / 200K TPD
-            chain.append(ProviderConfig(
-                provider="groq",
-                model="openai/gpt-oss-20b",
-                max_tokens=6000,
-                api_key=groq_key
-            ))
-
-            # Note: llama-3.1-8b-instant available for pipeline testing (fast, low token usage)
-            # Not included in production - 3 Groq models provide sufficient coverage
-
-        # Gemini Pro (reliable but slower). Same numbered-pool handling as Groq.
-        gemini_keys = collect_provider_keys("GEMINI")
-        if gemini_keys and "gemini" in enabled:
-            gemini_key = gemini_keys[0]
-            chain.append(ProviderConfig(
-                provider="gemini",
-                model="gemini-2.5-pro",
-                max_tokens=16000,
-                api_key=gemini_key
-            ))
-
-        if not chain:
-            logger.warning("No API keys configured - coordinator will use rule-based fallback only")
-
-        return chain
+    @staticmethod
+    def _entity(config: ProviderConfig) -> str:
+        """Unique id per (provider, model, key) so each key cools/cycles
+        independently — cycling a model's keys is just advancing through its
+        same-model entries in the chain."""
+        return f"{config.provider}:{config.model}#{config.key_id}"
 
     def _get_or_create_client(self, config: ProviderConfig) -> BaseAIClient:
         """Get existing client or create new one for provider config.
@@ -161,7 +109,7 @@ class ProviderCoordinator:
             BaseAIClient instance
         """
         # Use provider:model as unique key for per-model rate limiting
-        key = f"{config.provider}:{config.model}"
+        key = self._entity(config)
 
         if key in self.clients:
             return self.clients[key]
@@ -201,7 +149,7 @@ class ProviderCoordinator:
         Returns:
             True if circuit is open (too many failures)
         """
-        key = f"{config.provider}:{config.model}"
+        key = self._entity(config)
         return self.circuit_open.get(key, False)
 
     def _is_rate_limited(self, config: ProviderConfig) -> bool:
@@ -213,7 +161,7 @@ class ProviderCoordinator:
         Returns:
             True if still in cooldown period
         """
-        key = f"{config.provider}:{config.model}"
+        key = self._entity(config)
         cooldown_until = self.rate_limit_cooldown.get(key, 0)
 
         if cooldown_until > time.time():
@@ -229,7 +177,7 @@ class ProviderCoordinator:
         Args:
             config: Provider configuration
         """
-        key = f"{config.provider}:{config.model}"
+        key = self._entity(config)
         cooldown_until = time.time() + self.RATE_LIMIT_COOLDOWN
         self.rate_limit_cooldown[key] = cooldown_until
         logger.info(f"Provider {key} in rate limit cooldown for {self.RATE_LIMIT_COOLDOWN}s")
@@ -240,7 +188,7 @@ class ProviderCoordinator:
         Args:
             config: Provider configuration
         """
-        key = f"{config.provider}:{config.model}"
+        key = self._entity(config)
         self.consecutive_failures[key] = 0
         self.circuit_open[key] = False
 
@@ -250,7 +198,7 @@ class ProviderCoordinator:
         Args:
             config: Provider configuration
         """
-        key = f"{config.provider}:{config.model}"
+        key = self._entity(config)
         self.consecutive_failures[key] = self.consecutive_failures.get(key, 0) + 1
 
         if self.consecutive_failures[key] >= self.MAX_CONSECUTIVE_FAILURES:
@@ -270,8 +218,14 @@ class ProviderCoordinator:
         Returns:
             str: AI response or rule-based fallback
         """
-        # Try each provider in fallback chain
+        # Models that returned 413 this pass: skip ALL their keys. 413 is
+        # structural (the model rejects this request regardless of key), so
+        # cycling keys can't help — drop straight to the next model.
+        skip_models = set()
+
         for idx, config in enumerate(self.fallback_chain):
+            if config.model in skip_models:
+                continue
             # Skip if circuit breaker is open
             if self._is_circuit_open(config):
                 logger.debug(f"Skipping {config} - circuit breaker open")
@@ -303,20 +257,29 @@ class ProviderCoordinator:
             except Exception as e:
                 error_msg = str(e)
 
-                # Check if it's a rate limit error
+                # 429 = rate limit (per-key TPM): cool THIS (model,key); the chain's
+                # next entry for the same model uses a different key (separate bucket).
                 is_rate_limit = (
                     "429" in error_msg or
                     "rate limit" in error_msg.lower() or
                     "too many requests" in error_msg.lower()
                 )
+                # 413 = payload too large (structural, identical for every key of a
+                # model): skip the model's remaining keys, fall to the next model.
+                is_payload = (
+                    "413" in error_msg or
+                    "payload too large" in error_msg.lower() or
+                    "request too large" in error_msg.lower()
+                )
 
                 if is_rate_limit:
                     logger.warning(f"Rate limit hit for {config}: {error_msg}")
-                    # Put in cooldown instead of circuit breaker
                     self._set_rate_limit_cooldown(config)
+                elif is_payload:
+                    logger.warning(f"{config} returned 413 — skipping this model's remaining keys")
+                    skip_models.add(config.model)
                 else:
                     logger.error(f"Error from {config}: {error_msg}")
-                    # Only record failures (circuit breaker) for non-rate-limit errors
                     self._record_failure(config)
 
                 # Try next provider in chain
@@ -358,3 +321,53 @@ class ProviderCoordinator:
         for key in self.circuit_open:
             self.circuit_open[key] = False
             self.consecutive_failures[key] = 0
+
+
+# ----- chain builders (mode-aware, key-cycled) -----------------------------------
+# Two prompt-specific chains. Each model is expanded into one ProviderConfig per
+# key in the pool (mode-selected: live=key1, backtest=keys2..N), so the coordinator
+# cycles a model's keys before falling to the next model. Build once and pass to a
+# ProviderCoordinator.
+
+def _enabled_providers() -> set:
+    return {
+        p.strip().lower()
+        for p in os.getenv("ENABLED_AI_PROVIDERS", "groq,gemini").split(",")
+        if p.strip()
+    }
+
+
+def _expand(provider: str, model: str, max_tokens: int, keys: List[str]) -> List[ProviderConfig]:
+    """One ProviderConfig per key for (provider, model)."""
+    return [ProviderConfig(provider, model, max_tokens, api_key=k, key_id=i)
+            for i, k in enumerate(keys)]
+
+
+def build_portfolio_chain(mode: str = "backtest") -> List[ProviderConfig]:
+    """Long all-symbols prompt: Gemini Flash (handles the big prompt; no 413) →
+    llama-70b fallback. Both key-cycled."""
+    enabled = _enabled_providers()
+    chain: List[ProviderConfig] = []
+    if "gemini" in enabled:
+        chain += _expand("gemini", "gemini-2.5-flash", 16000, provider_keys("GEMINI", mode))
+    if "groq" in enabled:
+        chain += _expand("groq", "llama-3.3-70b-versatile", 6000, provider_keys("GROQ", mode))
+    if not chain:
+        logger.warning("Portfolio chain empty — no API keys; rule-based fallback only")
+    return chain
+
+
+def build_symbol_chain(mode: str = "backtest") -> List[ProviderConfig]:
+    """Short single-symbol prompt (special pass): best Groq model key-cycled, then
+    fallback Groq models key-cycled, then Gemini Flash."""
+    enabled = _enabled_providers()
+    chain: List[ProviderConfig] = []
+    if "groq" in enabled:
+        groq_keys = provider_keys("GROQ", mode)
+        for model in ("openai/gpt-oss-120b", "llama-3.3-70b-versatile", "openai/gpt-oss-20b"):
+            chain += _expand("groq", model, 6000, groq_keys)
+    if "gemini" in enabled:
+        chain += _expand("gemini", "gemini-2.5-flash", 16000, provider_keys("GEMINI", mode))
+    if not chain:
+        logger.warning("Symbol chain empty — no API keys; rule-based fallback only")
+    return chain

@@ -14,7 +14,7 @@ import json
 
 from src.platform.types import BaseDecisionModel, MarketData
 from src.decision.prompts import PromptBuilder
-from src.decision.providers import ProviderCoordinator
+from src.decision.providers import ProviderCoordinator, build_portfolio_chain, build_symbol_chain
 from src.decision.fallback import rule_based_decision, rule_based_portfolio
 from src.risk.manager import SimpleRiskManager
 from src.platform.config import INITIAL_CAPITAL, MAX_DECISION_HISTORY
@@ -28,31 +28,42 @@ logger = setup_logger(__name__, 'ai_brain.log')
 class AIBrain(BaseDecisionModel):
     """AI decision model with multi-provider fallback support.
 
-    Uses ProviderCoordinator internally for automatic fallback:
-    Groq gpt-oss-120b → llama-3.3-70b → gpt-oss-20b → Gemini Pro → rule-based
+    Two prompt-specific chains (each key-cycled, mode-aware):
+    - portfolio (long, all-symbols): Gemini Flash → llama-3.3-70b
+    - single-symbol (short, special pass): gpt-oss-120b → llama-3.3-70b → gpt-oss-20b → Flash
     """
 
-    def __init__(self, api_key: Optional[str] = None, temperature: float = 0.6):
-        """Initialize with provider coordinator.
+    def __init__(self, api_key: Optional[str] = None, temperature: float = 0.6,
+                 mode: str = "backtest"):
+        """Initialize with two provider coordinators (portfolio + single-symbol).
 
         Args:
             api_key: Deprecated (kept for backward compatibility, now ignored)
             temperature: Sampling temperature for all providers
+            mode: 'backtest' (cycle keys 2..N) or 'live' (key 1 only)
         """
         try:
-            # Initialize provider coordinator with fallback chain
-            self.coordinator = ProviderCoordinator(temperature=temperature)
+            self.mode = mode
+            # The long all-symbols prompt and the short single-symbol prompt use
+            # different model chains; each cycles its key pool (providers.build_*_chain).
+            self.portfolio_coordinator = ProviderCoordinator(
+                fallback_chain=build_portfolio_chain(mode), temperature=temperature)
+            self.symbol_coordinator = ProviderCoordinator(
+                fallback_chain=build_symbol_chain(mode), temperature=temperature)
 
             self.prompt_builder = PromptBuilder()
             self.risk_manager = SimpleRiskManager()
             self.decision_history = []
 
-            # Track API failures for this brain instance (coordinator has its own circuit breakers)
+            # Track API failures for this brain instance (coordinators have their own circuit breakers)
             self.consecutive_failures = 0
             self.max_consecutive_failures = 5
 
-            logger.info(f"AI initialized with {len(self.coordinator.fallback_chain)} providers in fallback chain")
-            logger.info(f"Current provider: {self.coordinator.get_current_provider()}")
+            logger.info(
+                f"AI initialized (mode={mode}): portfolio chain "
+                f"{len(self.portfolio_coordinator.fallback_chain)}, symbol chain "
+                f"{len(self.symbol_coordinator.fallback_chain)}"
+            )
         except Exception as e:
             logger.error(f"Failed to initialize AI: {e}")
             raise AIAnalysisError(f"AI initialization failed: {e}")
@@ -127,13 +138,13 @@ class AIBrain(BaseDecisionModel):
                     response_text, current_price
                 )
             except json.JSONDecodeError as e:
-                provider = self.coordinator.get_current_provider() or "AI"
+                provider = self.symbol_coordinator.get_current_provider() or "AI"
                 logger.warning(f"Failed to parse {provider} response: {e}")
                 return self._safe_default_response("Parse error")
 
             # Validate decision
             if not self._validate_decision(decision):
-                provider = self.coordinator.get_current_provider() or "AI"
+                provider = self.symbol_coordinator.get_current_provider() or "AI"
                 logger.warning(f"Invalid decision from {provider}")
                 return self._safe_default_response("Invalid decision")
             
@@ -244,10 +255,10 @@ class AIBrain(BaseDecisionModel):
         """
         start_time = time.time()
 
-        response_text = self.coordinator.call_with_fallback(prompt, max_tokens=max_tokens)
+        response_text = self.symbol_coordinator.call_with_fallback(prompt, max_tokens=max_tokens)
 
         duration = time.time() - start_time
-        provider = self.coordinator.get_current_provider() or "rule-based"
+        provider = self.symbol_coordinator.get_current_provider() or "rule-based"
         logger.info(f"AI response from {provider} in {duration:.2f}s")
         logger.debug(f"Response: {response_text[:200]}...")  # Log first 200 chars
 
@@ -259,7 +270,7 @@ class AIBrain(BaseDecisionModel):
         Note: max_tokens is handled by provider configs in coordinator.
         Groq uses 3000 (TPM limit), others use higher values.
         """
-        return self.coordinator.call_with_fallback(prompt)
+        return self.portfolio_coordinator.call_with_fallback(prompt)
 
 
     def _log_decision(self, symbol: str, decision: Dict[str, Any],
@@ -369,7 +380,7 @@ class AIBrain(BaseDecisionModel):
                 portfolio_decisions = self._validate_portfolio_positions(portfolio_decisions, current_positions)
 
             except json.JSONDecodeError as e:
-                provider = self.coordinator.get_current_provider() or "AI"
+                provider = self.portfolio_coordinator.get_current_provider() or "AI"
                 logger.warning(f"Failed to parse {provider} portfolio response: {e}")
                 logger.error(f"Response text (first 500 chars): {response_text[:500]}")
                 logger.error(f"Response text (last 300 chars): {response_text[-300:]}")
