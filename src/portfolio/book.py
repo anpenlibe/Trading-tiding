@@ -19,7 +19,7 @@ import pandas as pd
 from src.platform.config import (
     INITIAL_CAPITAL, EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT,
 )
-from src.platform.logger import setup_logger
+from src.platform.logger import setup_logger, LOGS_DIR
 
 logger = setup_logger(__name__, 'portfolio.log')
 
@@ -83,9 +83,10 @@ class Portfolio:
         self.peak_capital = initial_capital
         self.max_drawdown = 0.0
 
-        self.trade_log_file = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 'data', 'logs', 'paper_trades.json'
-        )
+        # Use the logger's canonical repo-root data/logs (NOT src/data/logs): the
+        # old dirname(dirname(__file__)) resolved to src/, splitting account state
+        # away from the logs the monitor reads. One logs dir, one source of truth.
+        self.trade_log_file = os.path.join(LOGS_DIR, 'paper_trades.json')
         os.makedirs(os.path.dirname(self.trade_log_file), exist_ok=True)
 
         logger.info(f"Portfolio initialized with capital: ₹{initial_capital}")
@@ -174,6 +175,7 @@ class Portfolio:
                 "stop_loss": p.stop_loss,
                 "target": p.target,
                 "entry_time": p.timestamp,
+                "emergency_recheck_pct": p.emergency_recheck_pct,
             }
             for symbol, p in self.open_positions.items()
         }
@@ -283,3 +285,21 @@ class Portfolio:
                 f.write(json.dumps(asdict(trade), default=str) + '\n')
         except Exception as e:
             logger.error(f"Error logging trade: {e}")
+
+    def write_state(self, path: Optional[str] = None):
+        """Dump a point-in-time account + positions snapshot for the live monitor.
+
+        Overwrites a single JSON file (not appended) so a poller always reads the
+        CURRENT state cheaply. Called once per tick by the runners — the one piece
+        of live account state that can't be reconstructed from the log stream.
+        """
+        path = path or os.path.join(os.path.dirname(self.trade_log_file), 'portfolio_state.json')
+        try:
+            with open(path, 'w') as f:
+                json.dump({
+                    'timestamp': datetime.now().isoformat(timespec='seconds'),
+                    'account': self.get_account_info(),
+                    'positions': self.get_positions(),
+                }, f, default=str)
+        except Exception as e:
+            logger.error(f"Error writing portfolio state: {e}")

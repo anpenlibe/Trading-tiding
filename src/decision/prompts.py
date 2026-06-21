@@ -136,60 +136,79 @@ class PromptBuilder:
         except (KeyError, TypeError, ValueError):
             current_price = 100.0  # Fallback price
         
-        prompt = f"""You are an expert swing trading analyst for the Indian stock market (NSE). 
-Analyze the following data for {symbol} and provide a trading recommendation.
+        # Why this special pass fired — the breached alert(s). Telling the model the
+        # trigger turns a generic re-analysis into a reaction to a specific event.
+        alert_section = ""
+        alert_trigger = context.get('alert_trigger')
+        if alert_trigger:
+            lines = []
+            for a in alert_trigger:
+                # Prefer the specific condition (approaching_stop / macd_bullish_cross /
+                # price_above …) over the coarse enum type — it tells the model exactly
+                # what tripped, including whether it's managing its own stop/target.
+                t = (a.get('condition') or a.get('type') or 'alert').replace('_', ' ')
+                val = PromptBuilder.safe_format(a.get('value'))
+                thr = a.get('threshold')
+                lines.append(f"- {t}: current {val}" + (f" (threshold {PromptBuilder.safe_format(thr)})" if thr else ""))
+            alert_section = (
+                f"\nWHY YOU ARE ANALYZING {symbol} NOW (alert(s) fired since the last full review — "
+                f"act on this trigger, don't just re-rate the stock):\n" + "\n".join(lines) + "\n")
 
-CURRENT MARKET DATA:
-- Symbol: {symbol}
-- Current Price: ₹{current_price:.2f}
-- Day Range: ₹{PromptBuilder.safe_format(current.get('low', current_price))} - ₹{PromptBuilder.safe_format(current.get('high', current_price))}
-- Volume: {current_volume:,} (Ratio: {volume_ratio:.2f}x avg)
-- 5-Day Change: {price_change_5d:.2f}%
-- 20-Day Range: ₹{PromptBuilder.safe_format(low_20d, current_price)} - ₹{PromptBuilder.safe_format(high_20d, current_price)}
+        # Held-position context: if we own this symbol, tell the model our entry,
+        # P&L and stop/target so it can MANAGE the position (trim/hold/exit) rather
+        # than re-rate it as if flat. Mirrors the portfolio prompt's position line.
+        position = context.get('position')
+        if position and position.get('quantity'):
+            pos_section = (
+                f"\nYOUR CURRENT POSITION IN {symbol} (you own this — decide whether to HOLD, add, or SELL):\n"
+                f"- Qty {position.get('quantity')} @ entry ₹{PromptBuilder.safe_format(position.get('entry_price'))}"
+                f" | unrealized P&L {PromptBuilder.safe_format(position.get('pnl_percent'), 0, 1)}%"
+                f" | stop ₹{PromptBuilder.safe_format(position.get('stop_loss'))}"
+                f" target ₹{PromptBuilder.safe_format(position.get('target'))}\n")
+        else:
+            pos_section = f"\nYOU DO NOT HOLD {symbol} (a SELL is not possible — choose BUY or HOLD).\n"
 
-TECHNICAL INDICATORS:
-- SMA 20: ₹{PromptBuilder.safe_format(indicators.get('sma_20'), current_price)}
-- SMA 50: ₹{PromptBuilder.safe_format(indicators.get('sma_50'), current_price)}
-- SMA 200: ₹{PromptBuilder.safe_format(indicators.get('sma_200'), current_price)}
-- RSI (14): {PromptBuilder.safe_format(indicators.get('rsi_14'), 50, 1)}
-- MACD: {PromptBuilder.safe_format(indicators.get('macd'), 0)}
-- MACD Signal: {PromptBuilder.safe_format(indicators.get('macd_signal'), 0)}
-- MACD Histogram: {PromptBuilder.safe_format(indicators.get('macd_histogram'), 0)}
-- Price Change %: {PromptBuilder.safe_format(indicators.get('price_change_pct'), 0)}%
-- ATR (14): {PromptBuilder.safe_format(indicators.get('atr_14'))} | Bollinger %B: {PromptBuilder.safe_format(indicators.get('bollinger_pct_b'), 0, 2)} (BW {PromptBuilder.safe_format(indicators.get('bollinger_bandwidth'), 0, 1)}%)
-- RSI trajectory Δ3: {PromptBuilder.safe_format(indicators.get('rsi_trajectory'), 0, 1)} | Stoch %K/%D: {PromptBuilder.safe_format(indicators.get('stoch_k'), 50, 0)}/{PromptBuilder.safe_format(indicators.get('stoch_d'), 50, 0)} | ROC(10): {PromptBuilder.safe_format(indicators.get('roc_10'), 0, 1)}%
-- Price vs SMA20/50: {PromptBuilder.safe_format(indicators.get('price_vs_sma20_pct'), 0, 1)}%/{PromptBuilder.safe_format(indicators.get('price_vs_sma50_pct'), 0, 1)}% | Range-pos: {PromptBuilder.safe_format(indicators.get('range_position'), 0, 2)} | OBV-trend: {PromptBuilder.safe_format(indicators.get('obv_trend'), 0, 2)}
+        sf = PromptBuilder.safe_format
+        ind = indicators
+        macd_state = "above-signal" if ind.get('macd') is not None and ind.get('macd_signal') is not None and ind.get('macd') > ind.get('macd_signal') else "below-signal"
+        capital = context.get('capital', INITIAL_CAPITAL)
 
-TRADING CONTEXT:
-- Strategy: {context.get('strategy', 'Swing Trading (2-5 day holds)')}
-- Capital: ₹{context.get('capital', INITIAL_CAPITAL)}
-- Max Risk: {context.get('max_risk', MAX_RISK_PER_TRADE)*100:.1f}% per trade
-- Risk Management: Stop loss at {context.get('stop_loss', STOP_LOSS_PERCENT)*100:.1f}%, Target at {context.get('take_profit', TAKE_PROFIT_PERCENT)*100:.1f}%
+        prompt = f"""You are a disciplined swing trader for NSE (Indian) equities, holding 2-5 days.
+You are being asked about ONE stock, {symbol}, right now — for the specific reason below. \
+Act on that reason; don't re-rate the stock from scratch.
+{alert_section}{pos_section}
+PRICE & VOLUME ({symbol}):
+- Last ₹{current_price:.2f} | day ₹{sf(current.get('low', current_price))}–₹{sf(current.get('high', current_price))} | 20-day ₹{sf(low_20d, current_price)}–₹{sf(high_20d, current_price)}
+- Volume {current_volume:,} ({volume_ratio:.2f}x 20d avg) | 5-day change {price_change_5d:.2f}%
 
-ANALYSIS CRITERIA:
-1. Trend alignment (price vs moving averages)
-2. Momentum indicators (RSI, MACD)
-3. Volume confirmation
-4. Risk-reward ratio
-5. Clear support/resistance levels
+TREND (where price sits vs its moving averages):
+- SMA20 ₹{sf(ind.get('sma_20'), current_price)} / SMA50 ₹{sf(ind.get('sma_50'), current_price)} / SMA200 ₹{sf(ind.get('sma_200'), current_price)}
+- Price vs SMA20/50: {sf(ind.get('price_vs_sma20_pct'), 0, 1)}% / {sf(ind.get('price_vs_sma50_pct'), 0, 1)}%  (positive = above = uptrend)
 
-CRITICAL: Respond ONLY with a valid JSON object in this exact format:
+MOMENTUM:
+- RSI14 {sf(ind.get('rsi_14'), 50, 1)} (Δ3 {sf(ind.get('rsi_trajectory'), 0, 1)}; >70 overbought, <30 oversold) | Stoch %K/%D {sf(ind.get('stoch_k'), 50, 0)}/{sf(ind.get('stoch_d'), 50, 0)} | ROC10 {sf(ind.get('roc_10'), 0, 1)}%
+- MACD {sf(ind.get('macd'), 0)} / signal {sf(ind.get('macd_signal'), 0)} / hist {sf(ind.get('macd_histogram'), 0)} ({macd_state})
+
+VOLATILITY & FLOW:
+- ATR14 {sf(ind.get('atr_14'))} | Bollinger %B {sf(ind.get('bollinger_pct_b'), 0, 2)} (BW {sf(ind.get('bollinger_bandwidth'), 0, 1)}%; >1 above upper band, <0 below lower) | range-pos {sf(ind.get('range_position'), 0, 2)} | OBV-trend {sf(ind.get('obv_trend'), 0, 2)}
+
+HOW TO DECIDE:
+- Start from the reason you were woken (the trigger and your position, if any), then confirm or veto it with trend + momentum + volume. Favor confluence over any single indicator.
+- Capital is limited (₹{capital}) — protect it. When the signal is mixed, HOLD.
+- Calibrate confidence: 0.5 = coin-flip/unclear, 0.6–0.7 = decent confluence, 0.8+ = strong multi-signal setup. Only act (BUY/SELL) above 0.6; otherwise HOLD.
+- You may leave stop_loss and target null — the system applies volatility-scaled (ATR) levels, so a templated ±% is not useful.
+
+Respond with ONLY this JSON object, no other text:
 {{
-    "signal": "BUY",
-    "confidence": 0.75,
-    "reasoning": "Brief explanation of your analysis",
-    "entry_price": {current_price:.2f},
-    "stop_loss": {current_price * 0.985:.2f},
-    "target": {current_price * 1.03:.2f}
+    "signal": "BUY | SELL | HOLD",
+    "confidence": 0.0-1.0,
+    "reasoning": "1-2 sentences naming the trigger and the indicators that decided it",
+    "entry_price": null,
+    "stop_loss": null,
+    "target": null
 }}
 
-Valid signals: BUY, SELL, HOLD
-Confidence: 0.0 to 1.0
-For BUY: Set stop_loss below entry_price, target above entry_price (or null for system defaults)
-For SELL: Set stop_loss above entry_price, target below entry_price (or null for system defaults)
-For HOLD: Set stop_loss and target to null.
-
-Remember: We're swing trading with limited capital (₹{context.get('capital', INITIAL_CAPITAL)}), so capital preservation is crucial. Only suggest BUY/SELL with high confidence setups (confidence > 0.6). For lower confidence, use HOLD."""
+Rules: SELL is only valid if you hold {symbol}. For BUY/SELL set entry_price to the current price (₹{current_price:.2f}); for HOLD set entry_price, stop_loss and target all to null."""
         
         return prompt
     
@@ -232,17 +251,13 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
                 'stop_loss': stop_loss,
                 'target': target
             }
-            
+
         except Exception as e:
-            # Return safe default
-            return {
-                "signal": "HOLD",
-                "confidence": 0.0,
-                "reasoning": f"Failed to parse response: {e}",
-                "entry_price": current_price,
-                "stop_loss": None,
-                "target": None
-            }
+            # Parse-or-raise: a parser must not fabricate a HOLD, which would hide
+            # the failure and pollute decision history with a fake decision. Raise a
+            # uniform ValueError (mirroring parse_portfolio_response) and let the
+            # engine — the single owner of degradation policy — choose the fallback.
+            raise ValueError(f"Failed to parse single-symbol response: {e}")
     
     @staticmethod
     def create_portfolio_analysis_prompt(portfolio_data: Dict[str, pd.DataFrame],
@@ -269,46 +284,23 @@ Remember: We're swing trading with limited capital (₹{context.get('capital', I
         watchlist_stocks = [s for s in symbols_list if s in previous_watchlist and s not in current_positions]
         remaining_stocks = [s for s in symbols_list if s not in current_positions and s not in previous_watchlist]
 
-        prompt = f"""You are an expert portfolio swing trader for the Indian stock market (NSE).
-Analyze the following {num_symbols} stocks simultaneously and provide trading recommendations for each.
+        prompt = f"""You are an expert portfolio swing trader for NSE (Indian) equities, holding 2-5 days.
+Analyze these {num_symbols} stocks together and return a decision for EACH.
 
-PORTFOLIO CONTEXT:
-- Symbols: {', '.join(symbols_list)}
-- Strategy: {context.get('strategy', 'Swing Trading (2-5 day holds)')}
-- Available Capital: ₹{available_capital:.2f}
-- Max Risk: {context.get('max_risk', MAX_RISK_PER_TRADE)*100:.1f}% per trade
-- Timestamp: {context.get('timestamp', 'Current')}
-- MARKET REGIME: {_regime_line(portfolio_indicators)}
+ACCOUNT:
+- Available capital ₹{available_capital:.2f} | max risk {context.get('max_risk', MAX_RISK_PER_TRADE)*100:.1f}% per trade | {context.get('timestamp', 'Current')}
+- Market regime: {_regime_line(portfolio_indicators)}
 
-CRITICAL TRADING RULES - MUST FOLLOW:
-═══════════════════════════════════════
-🔵 OWNED POSITIONS ({len(owned_stocks)}): {', '.join(owned_stocks) if owned_stocks else 'NONE'}
-   → Allowed Actions: SELL or HOLD only
-   → You ALREADY hold these stocks
-   → REVISE emergency thresholds each cycle based on current market conditions
+ACTION RULES (enforced in code — violations are dropped, so don't waste them):
+- [OWNED] you hold it  → SELL or HOLD only; always return revised emergency_thresholds for it.
+- [WATCH] / [NEW] you don't hold it → BUY or HOLD only.
+- You own the watchlist: flag a stock worth tracking with "watchlist": true + alert_conditions; drop ones that no longer interest you. Give a one-line watchlist_reason.
+- Between full reviews, the system watches OWNED + WATCH every few minutes and wakes you on a single stock the moment one of its alert_conditions levels is crossed — so set those levels where you'd actually want to act.
 
-🟣 WATCHLIST ({len(watchlist_stocks)}): {', '.join(watchlist_stocks) if watchlist_stocks else 'NONE'}
-   → Stocks YOU flagged for close monitoring
-   → Allowed Actions: BUY or HOLD only
-   → YOU MAINTAIN THIS LIST - add/remove stocks as you see fit
-   → Set custom alert thresholds for entry opportunities
+OWNED ({len(owned_stocks)}): {', '.join(owned_stocks) if owned_stocks else 'none'}
+WATCHLIST ({len(watchlist_stocks)}): {', '.join(watchlist_stocks) if watchlist_stocks else 'none'}
 
-🟡 REMAINING ({len(remaining_stocks)}): {', '.join(remaining_stocks[:8])}{'...' if len(remaining_stocks) > 8 else ''}
-   → Allowed Actions: BUY or HOLD only
-   → Add promising stocks to WATCHLIST for monitoring
-
-⚠️  VIOLATION WARNING: Any SELL signal for unowned stocks (🟣/🟡) will be REJECTED
-═══════════════════════════════════════
-
-YOUR WATCHLIST RESPONSIBILITIES:
-1. MAINTAIN: Add stocks showing potential, remove when no longer interesting
-2. MONITOR: Set custom alert thresholds (price levels, RSI, volume, etc.)
-3. EXPLAIN: Provide clear reason why each stock is on watchlist
-4. REVISE: Update thresholds for owned positions each cycle
-5. CONTEXT: Between scheduled cycles (90min), system monitors 🔵 OWNED + 🟣 WATCHLIST every 5 minutes
-6. ALERTS: When threshold triggers, you'll get emergency analysis request for that stock + all owned positions
-
-INDIVIDUAL STOCK ANALYSIS:
+STOCKS (positive vs-SMA% = above = uptrend; RSI >70 overbought / <30 oversold):
 """
 
         # Add each symbol's data
@@ -347,14 +339,14 @@ INDIVIDUAL STOCK ANALYSIS:
                 is_watchlist = symbol in watchlist_stocks
 
                 if is_owned:
-                    category = "🔵 OWNED"
-                    allowed_actions = "SELL/HOLD only"
+                    category = "[OWNED]"
+                    allowed_actions = "SELL/HOLD"
                 elif is_watchlist:
-                    category = "🟣 WATCHLIST"
-                    allowed_actions = "BUY/HOLD only (on YOUR watchlist)"
+                    category = "[WATCH]"
+                    allowed_actions = "BUY/HOLD"
                 else:
-                    category = "🟡 REMAINING"
-                    allowed_actions = "BUY/HOLD only"
+                    category = "[NEW]"
+                    allowed_actions = "BUY/HOLD"
 
                 sf = PromptBuilder.safe_format
                 ind = indicators
@@ -380,20 +372,17 @@ INDIVIDUAL STOCK ANALYSIS:
 """
 
         prompt += f"""
-ANALYSIS REQUIREMENTS:
-1. Consider each stock individually for technical signals
-2. Look for portfolio-wide patterns and correlations
-3. Ensure proper diversification in recommendations
-4. Apply consistent risk management across all positions
-5. Only suggest BUY/SELL with high confidence (>0.6)
-6. MAINTAIN YOUR WATCHLIST: Add promising stocks, remove when no longer interesting
-7. For 🔵 OWNED: Always provide revised emergency_thresholds (percentage-based)
-8. For 🟣 WATCHLIST: Set watchlist=true and provide alert_conditions (absolute values)
+HOW TO DECIDE (per stock):
+- Weigh trend + momentum + volume together; favor confluence over any single indicator. Keep portfolio diversification and the market regime above in mind.
+- Calibrate confidence: 0.5 = unclear, 0.6–0.7 = decent confluence, 0.8+ = strong setup. Only BUY/SELL above 0.6; otherwise HOLD.
+- alert_conditions = absolute levels you want to be woken on (price_above / price_below / rsi_below / volume_spike). Set them for OWNED and WATCH stocks.
+- emergency_thresholds = percentages for OWNED stocks: stop_loss_pct (negative, e.g. {EMERGENCY_STOP_LOSS_PCT}), take_profit_pct (positive, e.g. {EMERGENCY_TAKE_PROFIT_PCT}), recheck_trigger_pct (move either way, e.g. {EMERGENCY_RECHECK_PCT}).
+- Leave stop_loss and target null — the system applies ATR-based levels.
 
-CRITICAL: Respond with a valid JSON object in this EXACT format:
+Respond with ONLY this JSON object (one entry per symbol), no other text:
 {{
-    "market_analysis": "Brief overall market view and portfolio insights",
-    "watchlist": ["SYMBOL1", "SYMBOL2"],
+    "market_analysis": "2-3 sentences: regime, portfolio posture, any cross-stock theme",
+    "watchlist": ["symbols you want tracked"],
     "decisions": {{"""
 
         # Add expected decision format - show one example, apply to all symbols
@@ -402,58 +391,41 @@ CRITICAL: Respond with a valid JSON object in this EXACT format:
 
         prompt += f"""
         "{first_symbol}": {{
-            "signal": "BUY/SELL/HOLD",
-            "confidence": 0.75,
-            "reasoning": "Brief analysis for {first_symbol}",
+            "signal": "BUY | SELL | HOLD",
+            "confidence": 0.0-1.0,
+            "reasoning": "1-2 sentences for {first_symbol}",
             "watchlist": false,
             "watchlist_reason": null,
             "entry_price": null,
             "stop_loss": null,
-            "take_profit": null,
-            "emergency_thresholds": {{
-                "stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT},
-                "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT},
-                "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}
-            }},
+            "target": null,
+            "emergency_thresholds": {{"stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT}, "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT}, "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}}},
             "alert_conditions": null
         }}"""
 
         if remaining_symbols:
             prompt += f""",
-        ... (apply same format for: {', '.join(remaining_symbols)})
+        ... same shape for every other symbol: {', '.join(remaining_symbols)}
 
-        Example for 🟣 WATCHLIST stock:
+        Example of a [WATCH] stock (flag it, set the levels that would make you act):
         "TCS": {{
             "signal": "HOLD",
-            "confidence": 0.65,
-            "reasoning": "Strong fundamentals, waiting for entry",
+            "confidence": 0.6,
+            "reasoning": "Constructive but no entry yet",
             "watchlist": true,
-            "watchlist_reason": "Wait for pullback to ₹3,150 or RSI oversold",
+            "watchlist_reason": "Want a pullback to ~3150 or oversold RSI",
             "entry_price": null,
             "stop_loss": null,
-            "take_profit": null,
+            "target": null,
             "emergency_thresholds": null,
-            "alert_conditions": {{
-                "price_below": 3150,
-                "rsi_below": 30,
-                "volume_spike": 2.0
-            }}
+            "alert_conditions": {{"price_below": 3150, "rsi_below": 30, "volume_spike": 2.0}}
         }}"""
 
-        prompt += f"""
-    }}
-}}
+        prompt += """
+    }
+}
 
-Valid signals: BUY, SELL, HOLD
-Confidence: 0.0 to 1.0
-Set entry_price to current price for BUY/SELL, null for HOLD
-Set stop_loss and take_profit to null for HOLD signals
-
-EMERGENCY THRESHOLDS (provide for ALL positions):
-- stop_loss_pct: Negative percentage to trigger emergency sell analysis (e.g., {EMERGENCY_STOP_LOSS_PCT} for {abs(EMERGENCY_STOP_LOSS_PCT):.1f}% loss)
-- take_profit_pct: Positive percentage to trigger emergency profit-taking analysis (e.g., {EMERGENCY_TAKE_PROFIT_PCT} for {EMERGENCY_TAKE_PROFIT_PCT:.1f}% gain)
-- recheck_trigger_pct: Percentage move in either direction to trigger position re-evaluation (e.g., {EMERGENCY_RECHECK_PCT})
-"""
+Set entry_price to the current price for BUY/SELL, null for HOLD; stop_loss and target stay null (ATR handles them). OWNED stocks must include emergency_thresholds; WATCH stocks must set watchlist:true plus alert_conditions."""
 
         return prompt
 

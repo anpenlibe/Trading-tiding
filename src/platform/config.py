@@ -64,14 +64,15 @@ if ZERODHA_API_KEY and ZERODHA_API_KEY != "your-zerodha-api-key-here":
 
 logger.info("Configured market-data APIs: %s", ', '.join(configured_apis) if configured_apis else 'None (Zerodha not configured)')
 
-# Trading Parameters - UPDATED FOR ₹10,000 CAPITAL
-INITIAL_CAPITAL     = float(os.getenv("INITIAL_CAPITAL", "10000.0"))
-MAX_RISK_PER_TRADE  = float(os.getenv("MAX_RISK_PER_TRADE", "0.015"))
-MAX_DAILY_LOSS      = float(os.getenv("MAX_DAILY_LOSS", "0.05"))
-MAX_DRAWDOWN        = float(os.getenv("MAX_DRAWDOWN", "0.15"))
+# Trading Parameters — ₹50,000 capital (≈5 positions × ₹10k).
+# Strategy knobs live here in code, NOT in .env (.env is for secrets only).
+INITIAL_CAPITAL     = 50000.0
+MAX_RISK_PER_TRADE  = 0.015
+MAX_DAILY_LOSS      = 0.05
+MAX_DRAWDOWN        = 0.15
 
 # Position Sizing
-MIN_TRADE_VALUE     = 500.0
+MIN_TRADE_VALUE     = 3000.0  # floor: keeps flat DP-charge drag under ~0.6%/round-trip
 MAX_POSITION_SIZE   = float(os.getenv("MAX_POSITION_SIZE", "0.20"))  # max fraction of capital per position
 
 # UPDATED: Centralized Symbol Management
@@ -84,8 +85,8 @@ try:
         get_symbols_by_sector
     )
     
-    # Strategy-based symbol selection
-    TRADING_STRATEGY = os.getenv("TRADING_STRATEGY", "swing").lower()
+    # Strategy-based symbol selection (code constant, not env-driven)
+    TRADING_STRATEGY = "diversified"
     
     if TRADING_STRATEGY == "conservative":
         SYMBOLS = get_conservative_symbols(max_symbols=8)
@@ -157,12 +158,23 @@ DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")
 # Risk Management
 STOP_LOSS_PERCENT     = float(os.getenv("STOP_LOSS_PERCENT", "0.015"))
 TAKE_PROFIT_PERCENT   = float(os.getenv("TAKE_PROFIT_PERCENT", "0.03"))
-TRAILING_STOP_PERCENT = 0.01  # NOTE: defined but currently unread anywhere
 
 # Emergency Threshold Defaults (for AI monitoring system)
 EMERGENCY_STOP_LOSS_PCT = float(os.getenv('EMERGENCY_STOP_LOSS_PCT', '-3.5'))  # Default -3.5%
 EMERGENCY_TAKE_PROFIT_PCT = float(os.getenv('EMERGENCY_TAKE_PROFIT_PCT', '4.0'))  # Default +4.0%
 EMERGENCY_RECHECK_PCT = float(os.getenv('EMERGENCY_RECHECK_PCT', '2.0'))  # Default ±2.0%
+
+# Proactive throttle: minimum wall-clock seconds between AI calls to the SAME
+# provider, derived from the free-tier TOKENS-PER-MINUTE ceiling (not a guess).
+# Groq gpt-oss-120b = 8K TPM/key; backtest pools 3 keys = 24K TPM. A call is ~3K
+# tokens (≈2K prompt + ~1K completion), so ~8 calls/min stays under budget →
+# ~7.5s spacing; round to 10s for headroom. Rotation spreads load across the keys;
+# this keeps the aggregate token RATE below the ceiling so the good models stay warm
+# instead of all cooling and dumping everything onto the weak 20b fallback.
+AI_CALL_MIN_INTERVAL_SEC = float(os.getenv('AI_CALL_MIN_INTERVAL_SEC', '10.0'))
+# A 429'd (model,key) is benched this long. A TPM bucket refills over a full minute,
+# so 60s lets it actually recover — a shorter bench just retries into the same wall.
+RATE_LIMIT_COOLDOWN_SEC = int(os.getenv('RATE_LIMIT_COOLDOWN_SEC', '60'))
 
 # Paper Trading Settings
 # PAPER_TRADE_COMMISSION is a legacy flat per-trade fee, superseded by the
@@ -226,10 +238,22 @@ DEFAULT_TRADE_HISTORY_LIMIT = int(os.getenv('DEFAULT_TRADE_HISTORY_LIMIT', '50')
 # ============= ALERT CONFIGURATION =============
 # Alert system settings
 ENABLE_ALERTS = True
-ALERT_COOLDOWN_MINUTES = 30           # NOTE: defined but currently unread anywhere
 PRICE_ALERT_THRESHOLD = float(os.getenv("PRICE_ALERT_THRESHOLD", "0.02"))  # 2% move
-VOLUME_SPIKE_MULTIPLIER = 2.0         # NOTE: trader.py hardcodes 2.0 instead of reading this
+VOLUME_SPIKE_MULTIPLIER = float(os.getenv("VOLUME_SPIKE_MULTIPLIER", "2.0"))  # default spike threshold for VolumeSpikRule
 RSI_ALERT_DURATION = 2  # Periods RSI must stay extreme
+# Wake the AI when price has travelled this fraction of the way from entry toward
+# its stop/target — anchored to the entry→level DISTANCE, not a flat % of the level
+# (a flat % overshoots past entry on tight ATR stops and fires at entry). 0.8 = wake
+# at 80% of the way to the level, before the executor's mechanical auto-close.
+ALERT_APPROACH_FRACTION = float(os.getenv("ALERT_APPROACH_FRACTION", "0.8"))
+# Minimum |macd - signal|, as a % of price, for a MACD cross to count. On 1-minute
+# data the lines hug zero and flip on noise (we saw sells fire at gaps of 0.006);
+# requiring real separation filters the whipsaw. Price-relative so it scales across
+# a ₹250 and a ₹3000 stock.
+MACD_CROSS_MIN_GAP_PCT = float(os.getenv("MACD_CROSS_MIN_GAP_PCT", "0.03"))
+# MACD-cross cooldown (minutes) — longer than the old 45 so a chopping stock can't
+# re-wake the special pass every few minutes.
+MACD_CROSS_COOLDOWN_MIN = int(os.getenv("MACD_CROSS_COOLDOWN_MIN", "90"))
 
 # Development/Debug Settings
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -368,7 +392,6 @@ if TEST_MODE:
 
     # Use shorter intervals for faster testing
     TRADING_CYCLE_SECONDS = 60  # 1 minute instead of 5
-    ALERT_COOLDOWN_MINUTES = 5  # 5 minutes instead of 30
 
     logger.warning(
         "Test mode overrides applied: min_trade_value=%s, max_position_size=%s%%, max_risk_per_trade=%s%%",

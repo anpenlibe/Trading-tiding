@@ -15,14 +15,37 @@ Combined Groq capacity: 500K TPD
 from typing import Dict, List, Optional, Any
 import os
 import time
+import threading
 from src.decision.clients.base_client import BaseAIClient
 from src.decision.clients.gemini_client import GeminiClient
 from src.decision.clients.groq_client import GroqClient
+from src.platform.config import AI_CALL_MIN_INTERVAL_SEC, RATE_LIMIT_COOLDOWN_SEC
 from src.platform.logger import setup_logger
 from src.platform.errors import AIAnalysisError
+from src.platform.events import log_event
 from src.decision.keys import provider_keys
 
 logger = setup_logger(__name__, 'provider_coordinator.log')
+
+# Module-level pacer shared across ALL coordinators: the portfolio (general) and
+# symbol (special) chains both hit the same provider accounts, so spacing must be
+# global per provider, not per coordinator. Reserves a time slot under the lock,
+# then sleeps outside it.
+_pace_lock = threading.Lock()
+_last_call_at: Dict[str, float] = {}
+
+
+def _pace(provider: str, min_interval: float):
+    """Block until at least ``min_interval`` s have passed since the last call to
+    ``provider`` (across every coordinator). No-op when the interval is 0."""
+    if min_interval <= 0:
+        return
+    with _pace_lock:
+        target = max(time.time(), _last_call_at.get(provider, 0.0) + min_interval)
+        _last_call_at[provider] = target
+    wait = target - time.time()
+    if wait > 0:
+        time.sleep(wait)
 
 
 class ProviderConfig:
@@ -61,7 +84,7 @@ class ProviderCoordinator:
     """
 
     MAX_CONSECUTIVE_FAILURES = 5
-    RATE_LIMIT_COOLDOWN = 65  # Seconds to wait after rate limit (65s = just over 1 minute)
+    RATE_LIMIT_COOLDOWN = RATE_LIMIT_COOLDOWN_SEC  # benched seconds after a 429 (config)
 
     def __init__(self, fallback_chain: Optional[List[ProviderConfig]] = None,
                  temperature: float = 0.6):
@@ -80,8 +103,16 @@ class ProviderCoordinator:
         self.circuit_open: Dict[str, bool] = {}
         self.rate_limit_cooldown: Dict[str, float] = {}  # Track rate limit cooldown (timestamp when available again)
 
-        # Current provider tracking
-        self.current_provider_index = 0
+        # Current provider tracking (by entity, since the per-call attempt order
+        # is rotated — an index into the static chain would be misleading).
+        self.current_entity: Optional[str] = None
+
+        # Round-robin: chain grouped into same-model key-runs, plus a call counter.
+        # Each call rotates the starting key WITHIN each model's group, so repeated
+        # calls spread across all of a model's keys instead of always hammering key 0
+        # and only moving on after it 429s. Model priority order is preserved.
+        self._groups = self._group_chain(self.fallback_chain)
+        self._call_count = 0
 
         logger.info(f"Initialized coordinator with {len(self.fallback_chain)} providers")
         for idx, config in enumerate(self.fallback_chain):
@@ -91,6 +122,31 @@ class ProviderCoordinator:
         """Default when no chain is supplied: the single-symbol chain in backtest
         mode. AIBrain normally builds explicit portfolio/symbol chains instead."""
         return build_symbol_chain("backtest")
+
+    @staticmethod
+    def _group_chain(chain: List[ProviderConfig]) -> List[List[ProviderConfig]]:
+        """Split the flat chain into consecutive same-(provider,model) key-runs,
+        preserving order. Keys for one model are contiguous (built by `_expand`),
+        so each group is exactly that model's key pool — the unit we round-robin."""
+        groups: List[List[ProviderConfig]] = []
+        for cfg in chain:
+            if groups and (cfg.provider, cfg.model) == (groups[-1][0].provider, groups[-1][0].model):
+                groups[-1].append(cfg)
+            else:
+                groups.append([cfg])
+        return groups
+
+    def _attempt_order(self) -> List[ProviderConfig]:
+        """The chain for THIS call: each model's keys rotated by the call counter so
+        successive calls start on a different key. Model priority order is kept; on
+        failure the loop still falls through every remaining key and model."""
+        rot = self._call_count
+        order: List[ProviderConfig] = []
+        for group in self._groups:
+            n = len(group)
+            start = rot % n  # no-op for single-key groups (e.g. live = 1 key)
+            order += group[start:] + group[:start]
+        return order
 
     @staticmethod
     def _entity(config: ProviderConfig) -> str:
@@ -223,7 +279,10 @@ class ProviderCoordinator:
         # cycling keys can't help — drop straight to the next model.
         skip_models = set()
 
-        for idx, config in enumerate(self.fallback_chain):
+        # Advance the round-robin so this call starts on a different key than the last.
+        self._call_count += 1
+
+        for config in self._attempt_order():
             if config.model in skip_models:
                 continue
             # Skip if circuit breaker is open
@@ -238,13 +297,19 @@ class ProviderCoordinator:
             try:
                 client = self._get_or_create_client(config)
 
-                # Log provider switch
-                if idx != self.current_provider_index:
-                    logger.info(f"Switching provider: {self.fallback_chain[self.current_provider_index]} → {config}")
-                    self.current_provider_index = idx
+                # Log provider switch (tracked by entity since attempt order rotates)
+                entity = self._entity(config)
+                if entity != self.current_entity:
+                    if self.current_entity is not None:
+                        logger.info(f"Switching provider: {self.current_entity} → {entity}")
+                    self.current_entity = entity
 
                 # Use config's max_tokens unless overridden
                 tokens = max_tokens or config.max_tokens
+
+                # Proactively space calls to this provider so a burst of special
+                # passes doesn't fire into the per-minute limit all at once.
+                _pace(config.provider, AI_CALL_MIN_INTERVAL_SEC)
 
                 logger.debug(f"Calling {config} with max_tokens={tokens}")
                 response = client.call_api(prompt, max_tokens=tokens)
@@ -274,6 +339,7 @@ class ProviderCoordinator:
 
                 if is_rate_limit:
                     logger.warning(f"Rate limit hit for {config}: {error_msg}")
+                    log_event('rate_limit', provider=str(config))
                     self._set_rate_limit_cooldown(config)
                 elif is_payload:
                     logger.warning(f"{config} returned 413 — skipping this model's remaining keys")
@@ -297,9 +363,9 @@ class ProviderCoordinator:
         Returns:
             Provider name or None if using rule-based
         """
-        if 0 <= self.current_provider_index < len(self.fallback_chain):
-            config = self.fallback_chain[self.current_provider_index]
-            return f"{config.provider}:{config.model}"
+        # current_entity is "provider:model#key_id"; strip the key for the name.
+        if self.current_entity:
+            return self.current_entity.rsplit('#', 1)[0]
         return None
 
     def get_status(self) -> Dict[str, Any]:

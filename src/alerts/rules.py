@@ -2,19 +2,31 @@
 
 from typing import Dict, Any
 from src.alerts.engine import AlertRule, AlertType
-from src.platform.config import RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD
+from src.platform.config import (
+    RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD, VOLUME_SPIKE_MULTIPLIER,
+    MACD_CROSS_MIN_GAP_PCT, MACD_CROSS_COOLDOWN_MIN,
+)
 
 
 class PriceCrossRule(AlertRule):
-    """Alert when price crosses threshold."""
-    
-    def __init__(self, symbol: str, threshold: float, direction: str = "above"):
+    """Alert when price crosses a threshold.
+
+    ``kind`` labels WHY the level matters so the fired alert is self-describing in
+    the special-pass prompt: ``approaching_stop`` / ``approaching_target`` /
+    ``recheck`` (AI position-management levels) vs the default ``price_above`` /
+    ``price_below`` (a level the AI explicitly asked to watch). It also keeps the
+    rule name unique so two different levels on the same symbol don't collide.
+    """
+
+    def __init__(self, symbol: str, threshold: float, direction: str = "above",
+                 kind: str = None, priority: int = 2):
+        condition = kind or f"price_{direction}"
         super().__init__(
-            name=f"{symbol}_price_{direction}_{threshold}",
+            name=f"{symbol}_{condition}_{threshold}",
             alert_type=AlertType.PRICE_CROSS,
-            condition=f"price_{direction}",
+            condition=condition,
             threshold=threshold,
-            priority=2
+            priority=priority
         )
         self.symbol = symbol
         self.direction = direction
@@ -83,7 +95,7 @@ class RSIExtremeRule(AlertRule):
 class VolumeSpikRule(AlertRule):
     """Alert on volume spikes."""
     
-    def __init__(self, symbol: str, spike_multiplier: float = 2.0):
+    def __init__(self, symbol: str, spike_multiplier: float = VOLUME_SPIKE_MULTIPLIER):
         super().__init__(
             name=f"{symbol}_volume_spike",
             alert_type=AlertType.VOLUME_SPIKE,
@@ -126,45 +138,62 @@ class VolumeSpikRule(AlertRule):
 
 
 class MACDCrossRule(AlertRule):
-    """Alert on MACD signal line crossovers."""
-    
-    def __init__(self, symbol: str, direction: str = "bullish"):
+    """Alert on MACD signal-line crossovers — but only *meaningful* ones.
+
+    A bare sign-flip of (macd - signal) is noise on 1-minute data: the lines hug
+    zero and cross back and forth on tiny wiggles. We require the lines to have
+    actually separated — ``|macd - signal| >= min_gap_pct% of price`` — so a
+    hair-thin zero-line whipsaw doesn't wake the special pass into a reflexive
+    trade. Price-relative so the bar scales across cheap and expensive stocks.
+    """
+
+    def __init__(self, symbol: str, direction: str = "bullish",
+                 min_gap_pct: float = MACD_CROSS_MIN_GAP_PCT,
+                 cooldown_minutes: int = MACD_CROSS_COOLDOWN_MIN):
         super().__init__(
             name=f"{symbol}_macd_{direction}_cross",
             alert_type=AlertType.MACD_CROSS,
             condition=f"macd_{direction}_cross",
             threshold=0,
             priority=2,
-            cooldown_minutes=45
+            cooldown_minutes=cooldown_minutes
         )
         self.symbol = symbol
         self.direction = direction  # "bullish" or "bearish"
+        self.min_gap_pct = min_gap_pct
         self.last_macd = None
         self.last_signal = None
-    
+
     def check(self, market_data: Dict[str, Any]) -> bool:
         if market_data.get('symbol') != self.symbol:
             return False
-        
+
         indicators = market_data.get('indicators', {})
         current_macd = indicators.get('macd', 0)
         current_signal = indicators.get('macd_signal', 0)
-        
+
         if self.last_macd is None or self.last_signal is None:
             self.last_macd = current_macd
             self.last_signal = current_signal
             return False
-        
+
         # Check for crossover
         if self.direction == "bullish":
             # MACD crosses above signal
-            triggered = (self.last_macd <= self.last_signal and 
+            triggered = (self.last_macd <= self.last_signal and
                         current_macd > current_signal)
         else:
             # MACD crosses below signal
-            triggered = (self.last_macd >= self.last_signal and 
+            triggered = (self.last_macd >= self.last_signal and
                         current_macd < current_signal)
-        
+
+        # Gate on real separation: ignore near-zero micro-crosses (the whipsaw).
+        if triggered:
+            price = market_data.get('close', 0) or 0
+            min_gap = (self.min_gap_pct / 100.0) * price
+            if abs(current_macd - current_signal) < min_gap:
+                triggered = False
+
         self.last_macd = current_macd
         self.last_signal = current_signal
         return triggered

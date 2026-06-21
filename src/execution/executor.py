@@ -23,6 +23,7 @@ from src.platform.config import (
 from src.execution.costs import compute_charges
 from src.portfolio.book import Portfolio, PaperTrade
 from src.platform.logger import setup_logger
+from src.platform.events import log_event
 from src.monitoring.performance import performance_tracker
 
 logger = setup_logger(__name__, 'paper_trader.log')
@@ -143,6 +144,9 @@ class PaperTrader(BaseTradingExecutor):
 
         self.book.open(trade, total_cost)
         logger.info(f"BUY executed: {symbol} x{quantity} @ ₹{price:.2f}")
+        log_event('fill', action='BUY', symbol=symbol, quantity=quantity,
+                  price=round(price, 2), value=round(position_value, 2),
+                  commission=round(commission, 2))
         return {
             "status": "EXECUTED", "trade_id": trade.trade_id, "action": "BUY",
             "symbol": symbol, "quantity": quantity, "price": price,
@@ -176,6 +180,10 @@ class PaperTrader(BaseTradingExecutor):
             f"SELL executed: {symbol} x{quantity} @ ₹{price:.2f} "
             f"P&L: ₹{result['realized_pnl']:.2f} ({result['pnl_percent']:+.2f}%)"
         )
+        log_event('fill', action='SELL', symbol=symbol, quantity=quantity,
+                  price=round(price, 2), pnl=round(result['realized_pnl'], 2),
+                  pnl_pct=round(result['pnl_percent'], 2),
+                  reason=signal.get('exit_reason', 'SIGNAL'))
         return {
             "status": "EXECUTED", "trade_id": position.trade_id, "action": "SELL",
             "symbol": symbol, "quantity": quantity, "price": price,
@@ -183,20 +191,34 @@ class PaperTrader(BaseTradingExecutor):
             "realized_pnl": result['realized_pnl'], "pnl_percent": result['pnl_percent'],
         }
 
-    def update_positions(self, current_prices: Dict[str, float]):
-        """Mark positions to market, then auto-close any that hit stop-loss/target."""
+    def update_positions(self, current_prices: Dict[str, float]) -> list:
+        """Mark positions to market, then auto-close any that hit stop-loss/target.
+
+        This is the mechanical SAFETY FLOOR: it must run every tick so a position
+        is guaranteed to exit at its hard stop/target even when the AI/alert layer
+        doesn't act. Returns the list of auto-close fill results (each tagged with
+        ``symbol`` + ``exit_reason``) so the caller can record them and refresh any
+        derived state; empty when nothing closed.
+        """
         self.book.mark_to_market(current_prices)
+        closed = []
         # Iterate a copy: _execute_sell deletes from open_positions.
         for symbol, position in list(self.book.open_positions.items()):
             price = current_prices.get(symbol)
             if price is None:
                 continue
+            reason = None
             if position.stop_loss and price <= position.stop_loss:
                 logger.warning(f"Stop loss triggered for {symbol}")
-                self._execute_sell(symbol, position.quantity, price, {"exit_reason": "STOP_LOSS"})
+                reason = "STOP_LOSS"
             elif position.target and price >= position.target:
                 logger.info(f"Target reached for {symbol}")
-                self._execute_sell(symbol, position.quantity, price, {"exit_reason": "TARGET_HIT"})
+                reason = "TARGET_HIT"
+            if reason:
+                result = self._execute_sell(symbol, position.quantity, price, {"exit_reason": reason})
+                result.update(symbol=symbol, exit_reason=reason)
+                closed.append(result)
+        return closed
 
     def _validate_trade(self, symbol: str, action: str, quantity: int, price: float) -> Dict[str, Any]:
         """Validate trade parameters before execution (reads book state)."""

@@ -7,19 +7,19 @@ Refactored architecture:
 - Maintains backward compatibility with existing applications
 """
 
+import os
 import time
 from typing import Dict, Any, Optional, List
 import pandas as pd
-import json
 
 from src.platform.types import BaseDecisionModel, MarketData
 from src.decision.prompts import PromptBuilder
 from src.decision.providers import ProviderCoordinator, build_portfolio_chain, build_symbol_chain
 from src.decision.fallback import rule_based_decision, rule_based_portfolio
-from src.risk.manager import SimpleRiskManager
-from src.platform.config import INITIAL_CAPITAL, MAX_DECISION_HISTORY
-from src.platform.logger import setup_logger
+from src.platform.config import MAX_DECISION_HISTORY
+from src.platform.logger import setup_logger, LOGS_DIR
 from src.platform.errors import AIAnalysisError
+from src.platform.events import log_event
 from src.monitoring.performance import performance_tracker
 
 logger = setup_logger(__name__, 'ai_brain.log')
@@ -52,8 +52,12 @@ class AIBrain(BaseDecisionModel):
                 fallback_chain=build_symbol_chain(mode), temperature=temperature)
 
             self.prompt_builder = PromptBuilder()
-            self.risk_manager = SimpleRiskManager()
             self.decision_history = []
+
+            # Model + pass type of the most recent AI call, stamped onto the
+            # decision events emitted from the shared _log_decision funnel.
+            self._last_model = None
+            self._last_pass = None
 
             # Track API failures for this brain instance (coordinators have their own circuit breakers)
             self.consecutive_failures = 0
@@ -70,9 +74,12 @@ class AIBrain(BaseDecisionModel):
 
 
     @performance_tracker("ai_analysis")
-    def analyze(self, market_data: pd.DataFrame, 
-               indicators: Dict[str, float]) -> Dict[str, Any]:
-        """Analyze market with comprehensive error handling."""
+    def analyze(self, market_data: pd.DataFrame,
+               indicators: Dict[str, float], alert_context=None, position=None) -> Dict[str, Any]:
+        """Analyze one symbol. ``alert_context`` (list of fired alerts) is the trigger
+        reason for an alert-driven special pass; ``position`` is our held-position
+        state (entry/P&L/stop/target) when we own the stock. Both are rendered into
+        the prompt so the model knows WHY it's asked and WHAT it already holds."""
         try:
             # Validate data format first — without a usable DataFrame even the
             # rule-based fallback can't run, so a safe HOLD is the only option.
@@ -113,14 +120,16 @@ class AIBrain(BaseDecisionModel):
             context = {
                 'strategy': 'swing',
                 'risk_level': 'moderate',
-                'market_hours': True
+                'market_hours': True,
+                'alert_trigger': alert_context,  # why this special pass fired (or None)
+                'position': position,            # what we hold in this symbol (or None)
             }
             
             # Create prompt
             prompt = self.prompt_builder.create_analysis_prompt(
                 symbol, market_data, indicators, context
             )
-            
+
             # Get AI response
             try:
                 response_text = self._get_ai_response(prompt)
@@ -137,7 +146,9 @@ class AIBrain(BaseDecisionModel):
                 decision = self.prompt_builder.parse_response(
                     response_text, current_price
                 )
-            except json.JSONDecodeError as e:
+            except ValueError as e:
+                # parse_response raises ValueError on any unparseable AI output
+                # (JSONDecodeError is a ValueError subclass, so this covers both).
                 provider = self.symbol_coordinator.get_current_provider() or "AI"
                 logger.warning(f"Failed to parse {provider} response: {e}")
                 return self._safe_default_response("Parse error")
@@ -148,25 +159,13 @@ class AIBrain(BaseDecisionModel):
                 logger.warning(f"Invalid decision from {provider}")
                 return self._safe_default_response("Invalid decision")
             
-            # Add risk parameters
-            if decision['signal'] in ['BUY', 'SELL']:
-                try:
-                    risk_params = self.risk_manager.calculate_risk_parameters(
-                        symbol=symbol,
-                        signal_type=decision['signal'],
-                        entry_price=current_price,
-                        capital=INITIAL_CAPITAL
-                    )
-                    decision.update({
-                        'position_size': risk_params.position_size,
-                        'stop_loss': risk_params.stop_loss,
-                        'target': risk_params.target,
-                        'risk_amount': risk_params.risk_amount
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to calculate risk parameters: {e}")
-                    # Continue without risk parameters
-            
+            # NOTE: sizing/stops/targets are intentionally NOT computed here. The
+            # brain decides; the risk manager sizes. Every decision is routed through
+            # TradingPipeline._execute, which computes volatility-scaled (ATR) risk
+            # parameters against the LIVE available capital and overwrites anything
+            # set here — so doing it now (against INITIAL_CAPITAL) was dead work that
+            # only risked a stale, capital-blind position size leaking out.
+
             # Reset failure counter on success
             self.consecutive_failures = 0
             
@@ -202,34 +201,6 @@ class AIBrain(BaseDecisionModel):
         
         return True
     
-    def _validate_portfolio_positions(self, portfolio_decisions: Dict[str, Any],
-                                      current_positions: List[str]) -> Dict[str, Any]:
-        """Validate portfolio decisions against position constraints.
-
-        Detects invalid SELL signals for stocks not owned.
-
-        Args:
-            portfolio_decisions: Parsed AI decisions for all symbols
-            current_positions: List of symbols currently owned
-
-        Returns:
-            Portfolio decisions (with optional blocking if uncommented)
-        """
-        validated = portfolio_decisions.copy()
-        decisions = validated.get('decisions', {})
-
-        for symbol, decision in decisions.items():
-            if decision.get('signal') == 'SELL' and symbol not in current_positions:
-                logger.warning(f"🚫 AI Position Bug: Detected invalid SELL for unowned {symbol}")
-                logger.debug(f"   Original reasoning: {decision.get('reasoning', 'N/A')}")
-
-                # COMMENTED OUT: Uncomment to block invalid SELLs
-                # decision['signal'] = 'HOLD'
-                # decision['confidence'] = 0.0
-                # decision['reasoning'] = f"[BLOCKED: Cannot SELL unowned stock] Original: {decision.get('reasoning', 'N/A')[:100]}"
-
-        return validated
-
     def _safe_default_response(self, reason: str) -> Dict[str, Any]:
         """Return safe default response."""
         return {
@@ -262,6 +233,8 @@ class AIBrain(BaseDecisionModel):
         logger.info(f"AI response from {provider} in {duration:.2f}s")
         logger.debug(f"Response: {response_text[:200]}...")  # Log first 200 chars
 
+        self._last_model, self._last_pass = provider, 'special'
+        log_event('ai_call', model=provider, latency=round(duration, 2), pass_type='special')
         return response_text
 
     def _get_portfolio_ai_response(self, prompt: str) -> str:
@@ -270,7 +243,15 @@ class AIBrain(BaseDecisionModel):
         Note: max_tokens is handled by provider configs in coordinator.
         Groq uses 3000 (TPM limit), others use higher values.
         """
-        return self.portfolio_coordinator.call_with_fallback(prompt)
+        start_time = time.time()
+        response_text = self.portfolio_coordinator.call_with_fallback(prompt)
+        duration = time.time() - start_time
+        provider = self.portfolio_coordinator.get_current_provider() or "rule-based"
+        logger.info(f"AI response from {provider} in {duration:.2f}s")
+
+        self._last_model, self._last_pass = provider, 'general'
+        log_event('ai_call', model=provider, latency=round(duration, 2), pass_type='general')
+        return response_text
 
 
     def _log_decision(self, symbol: str, decision: Dict[str, Any],
@@ -295,7 +276,12 @@ class AIBrain(BaseDecisionModel):
                 self.decision_history = self.decision_history[-MAX_DECISION_HISTORY:]
             
             logger.info(f"Decision logged: {symbol} - {decision['signal']} (confidence: {decision['confidence']:.2f})")
-            
+
+            log_event('decision', symbol=symbol, signal=decision['signal'],
+                      confidence=round(float(decision['confidence']), 3),
+                      model=self._last_model, pass_type=self._last_pass,
+                      price=float(market_data['close'].iloc[-1]))
+
         except Exception as e:
             logger.warning(f"Failed to log decision: {e}")
     
@@ -374,22 +360,24 @@ class AIBrain(BaseDecisionModel):
                 portfolio_decisions = self.prompt_builder.parse_portfolio_response(
                     response_text, portfolio_data, context
                 )
-
-                # Validate position constraints (currently just logs, doesn't block)
-                current_positions = context.get('current_positions', [])
-                portfolio_decisions = self._validate_portfolio_positions(portfolio_decisions, current_positions)
-
-            except json.JSONDecodeError as e:
+                # Invalid SELLs (for unowned symbols) are prevented by the prompt and
+                # enforced in TradingPipeline.run_decisions (has_position) — no extra
+                # validation pass needed here.
+            except ValueError as e:
+                # parse_portfolio_response raises ValueError on unparseable output
+                # (JSONDecodeError is a ValueError subclass). Catching ValueError —
+                # not JSONDecodeError — is what makes this debug dump REACHABLE.
                 provider = self.portfolio_coordinator.get_current_provider() or "AI"
                 logger.warning(f"Failed to parse {provider} portfolio response: {e}")
                 logger.error(f"Response text (first 500 chars): {response_text[:500]}")
                 logger.error(f"Response text (last 300 chars): {response_text[-300:]}")
-                # Save malformed response for debugging
+                # Save the malformed response to the canonical logs dir for debugging.
                 try:
-                    with open('/tmp/ai_malformed_response.txt', 'w') as f:
+                    dump = os.path.join(LOGS_DIR, 'ai_malformed_response.txt')
+                    with open(dump, 'w') as f:
                         f.write(response_text)
-                    logger.error("Saved malformed response to /tmp/ai_malformed_response.txt")
-                except:
+                    logger.error(f"Saved malformed response to {dump}")
+                except Exception:
                     pass
                 return self._safe_portfolio_default_response(list(portfolio_data.keys()), "Parse error")
 

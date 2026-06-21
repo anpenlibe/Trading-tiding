@@ -14,7 +14,7 @@ when they change — STT in particular is revised in Union Budgets).
 Charge stack (per leg, on a turnover = price * quantity):
   - Brokerage      : delivery ₹0; intraday min(₹20, 0.03% of turnover)
   - STT            : delivery 0.1% both sides; intraday 0.025% sell-only
-  - Exchange txn   : NSE equity ~0.00297% of turnover (both sides)
+  - Exchange txn   : NSE equity ~0.00307% of turnover (both sides)
   - SEBI charges   : ₹10 per crore (both sides)
   - Stamp duty     : delivery 0.015% buy-only; intraday 0.003% buy-only
   - GST            : 18% on (brokerage + exchange txn + SEBI)
@@ -36,7 +36,7 @@ STT_DELIVERY = 0.001    # 0.1% on BOTH buy and sell
 STT_INTRADAY_SELL = 0.00025  # 0.025% on SELL only
 
 # Exchange transaction charge (NSE equity)
-EXCHANGE_TXN_RATE = 0.0000297  # 0.00297%, both sides
+EXCHANGE_TXN_RATE = 0.0000307  # 0.00307%, both sides
 
 # SEBI turnover charge: ₹10 per crore = 10 / 1e7
 SEBI_RATE = 0.000001
@@ -49,8 +49,8 @@ STAMP_DUTY_INTRADAY = 0.00003  # 0.003%
 GST_RATE = 0.18
 
 # Depository (DP) charge: delivery SELL only, flat per scrip per day, incl. GST.
-# Zerodha ₹13.5 + CDSL, ~₹15.93 with GST.
-DELIVERY_SELL_DP_CHARGE = 15.93
+# Zerodha ₹9.5 + CDSL ₹3.5 + ₹2.34 GST = ₹15.34.
+DELIVERY_SELL_DP_CHARGE = 15.34
 
 
 def _brokerage(turnover: float, product: str) -> float:

@@ -22,6 +22,7 @@ from src.platform.config import SYMBOLS, DB_PATH, INITIAL_CAPITAL, DEFAULT_DATA_
 from src.platform.types import MarketData
 from src.marketdata.feed import DatabaseSource, Feed
 from src.platform.logger import setup_logger
+from src.platform.events import log_event
 
 # Setup logger
 logger = setup_logger(__name__, 'historical_simulation.log')
@@ -223,6 +224,14 @@ class HistoricalSimulator:
         self.simulation_stats['start_time'] = datetime.now()
         self.simulation_stats['total_ticks'] = len(timestamps)
 
+        # Register this run so the monitor can identify + liveness-check it.
+        from src.platform.session import register_session
+        register_session('backtest', symbols=self.config.symbols,
+                         capital=INITIAL_CAPITAL, interval=self.config.interval,
+                         sim_interval_min=self.config.simulation_interval_minutes,
+                         general_every=self.config.general_pass_every,
+                         total_ticks=len(timestamps))
+
         logger.info(f"Simulating {len(timestamps)} time points ({self.config.simulation_interval_minutes}-min intervals) from {timestamps[0] if timestamps else 'N/A'} to {timestamps[-1] if timestamps else 'N/A'}")
         logger.info(f"Filtered from {len(all_timestamps)} total data points to {len(timestamps)} simulation points")
         
@@ -307,10 +316,27 @@ class HistoricalSimulator:
         if not (self.config.enable_ai_brain and self.pipeline):
             return
 
-        if tick_index % max(1, self.config.general_pass_every) == 0:
+        is_general = tick_index % max(1, self.config.general_pass_every) == 0
+        log_event('tick', sim_time=str(timestamp), symbols=len(portfolio_data),
+                  pass_type='general' if is_general else 'alert')
+        if is_general:
             self._run_general_pass(timestamp, portfolio_data, portfolio_indicators, current_prices)
         else:
             self._run_alert_pass(timestamp, portfolio_data, portfolio_indicators, current_prices, snapshots)
+
+        # Mechanical stop/target floor: AFTER the AI/alert pass had first say, mark
+        # to market and auto-close anything that reached its hard level. Record each
+        # auto-close in the sim trade log and refresh alert levels so a closed
+        # position stops waking us. Then snapshot account state for the monitor.
+        for ex in self.pipeline.manage_positions(current_prices):
+            self._record_trade(timestamp, ex['symbol'],
+                               {'signal': 'SELL', 'confidence': 1.0,
+                                'position_size': ex.get('quantity', 0),
+                                'reasoning': f"Mechanical {ex.get('exit_reason')}"},
+                               ex.get('price'), f"Auto-close: {ex.get('exit_reason')}")
+            if self.alert_manager:
+                self.alert_manager.refresh(self.paper_trader.get_positions())
+        self.paper_trader.book.write_state()
 
     def _run_general_pass(self, timestamp, portfolio_data, portfolio_indicators, current_prices):
         """General pass: portfolio prompt over all symbols -> decisions; register the
@@ -335,9 +361,10 @@ class HistoricalSimulator:
             decisions = result['decisions']
             self.simulation_stats['ai_decisions'] += len(decisions)
             if self.alert_manager:
-                self.alert_manager.register_ai_conditions(decisions)
+                self.alert_manager.update_from_general(decisions, current_positions)
             if result['market_analysis']:
                 logger.info(f"Market Analysis at {timestamp}: {result['market_analysis'][:100]}...")
+                log_event('analysis', sim_time=str(timestamp), text=result['market_analysis'][:300])
 
             for ex in result['executed']:
                 self._record_trade(timestamp, ex['symbol'], ex['decision'], ex['price'],
@@ -353,16 +380,17 @@ class HistoricalSimulator:
         single-symbol SPECIAL pass (gpt-oss) -> risk -> execute."""
         if not self.alert_manager:
             return
-        triggered = self.alert_manager.evaluate(snapshots)
+        triggered = self.alert_manager.evaluate(snapshots, now=timestamp)
         if not triggered:
             return
-        logger.info(f"Alerts triggered at {timestamp}: {triggered}")
+        logger.info(f"Alerts triggered at {timestamp}: {list(triggered)}")
         for symbol in triggered:
             if symbol not in portfolio_data:
                 continue
             try:
                 out = self.pipeline.run_special(
-                    symbol, portfolio_data[symbol], portfolio_indicators[symbol], current_prices[symbol]
+                    symbol, portfolio_data[symbol], portfolio_indicators[symbol], current_prices[symbol],
+                    alert_context=triggered[symbol]
                 )
                 self.simulation_stats['ai_decisions'] += 1
                 d = out['decision']
@@ -371,6 +399,10 @@ class HistoricalSimulator:
                 if ex and ex.get('status') == 'EXECUTED':
                     self._record_trade(timestamp, symbol, d, current_prices[symbol],
                                        f"SPECIAL pass (alert on {symbol})")
+                    # The book changed — re-derive stop/target/recheck alert levels
+                    # so a just-opened position is managed (or a closed one stops
+                    # waking us) without waiting for the next general pass.
+                    self.alert_manager.refresh(self.paper_trader.get_positions())
             except Exception as e:
                 logger.error(f"Special pass error for {symbol}: {e}")
 

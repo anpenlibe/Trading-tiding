@@ -61,11 +61,16 @@ class TradingPipeline:
         return {'decisions': decisions, 'market_analysis': market_analysis, 'executed': executed}
 
     def run_special(self, symbol: str, market_data, indicators: Dict[str, float],
-                    current_price: float) -> Dict[str, Any]:
+                    current_price: float, alert_context=None) -> Dict[str, Any]:
         """Alert-triggered SPECIAL pass: a single-symbol deep analysis (short prompt
-        → the fast gpt-oss symbol chain) → risk → execute. Returns
-        ``{'symbol', 'decision', 'executed'}``."""
-        decision = self.brain.analyze(market_data, indicators)
+        → the fast gpt-oss symbol chain) → risk → execute. ``alert_context`` is the
+        list of fired alerts (why this symbol tripped), passed into the prompt so the
+        model acts on the trigger. Returns ``{'symbol', 'decision', 'executed'}``."""
+        # If we hold this symbol, hand the model its position so it can manage it
+        # (trim/hold/exit) instead of re-rating as if flat.
+        position = self.executor.get_positions().get(symbol) if self.executor is not None else None
+        decision = self.brain.analyze(market_data, indicators,
+                                      alert_context=alert_context, position=position)
         signal_type = decision.get('signal')
         executed = None
         if signal_type and signal_type != 'HOLD' and self.executor is not None:
@@ -75,6 +80,19 @@ class TradingPipeline:
                 executed = self._execute(symbol, decision, current_price,
                                          atr=(indicators or {}).get('atr_14'))
         return {'symbol': symbol, 'decision': decision, 'executed': executed}
+
+    def manage_positions(self, current_prices: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Per-tick mechanical position management: mark to market and fire the
+        stop-loss / target SAFETY FLOOR.
+
+        This runs every tick in BOTH modes (the shared-core guarantee), beneath the
+        AI/alert layer: the alert rules wake the AI as price *approaches* a level so
+        it gets first say, and this guarantees the exit if price actually reaches the
+        hard level and the AI didn't act. Returns the auto-closed fills so a runner
+        can log/record them and refresh derived state. No-op without an executor."""
+        if self.executor is None:
+            return []
+        return self.executor.update_positions(current_prices)
 
     def _execute(self, symbol: str, signal: Dict[str, Any], current_price: float,
                  atr: Optional[float] = None) -> Dict[str, Any]:
@@ -94,7 +112,7 @@ class TradingPipeline:
                 signal['available_capital'] = account_info['available_capital']
 
                 is_valid, rejection_reason = self.risk_manager.validate_trade(
-                    signal, self.executor.get_positions()
+                    signal, self.executor.get_positions(), atr=atr
                 )
                 if not is_valid:
                     return {'status': 'REJECTED', 'reason': rejection_reason}

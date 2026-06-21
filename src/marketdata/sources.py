@@ -40,14 +40,18 @@ class ZerodhaAPI(BaseMarketDataAPI):
                 self.kite = KiteConnect(api_key=self.api_key)
                 self.kite.set_access_token(self.access_token)
 
-                # Test authentication with a permission-free call.
+                # Verify the access token with a cheap authenticated call. profile()
+                # returns a small user object and needs a valid session — unlike
+                # instruments(), which downloads the entire multi-MB instrument dump
+                # on every construction just to prove auth (the token map is loaded
+                # separately from instruments.csv, so that download was discarded).
                 try:
-                    instruments = self.kite.instruments()
-                    if len(instruments) > 0:
+                    profile = self.kite.profile()
+                    if profile:
                         self.is_authenticated = True
-                        logger.info("Zerodha API authenticated successfully")
+                        logger.info(f"Zerodha API authenticated ({profile.get('user_name', 'user')})")
                     else:
-                        raise Exception("No instruments data received")
+                        raise Exception("Empty profile response")
                 except Exception as e:
                     if "permission" in str(e).lower():
                         logger.warning(f"Zerodha API limited permissions: {e}")
@@ -79,7 +83,19 @@ class ZerodhaAPI(BaseMarketDataAPI):
             return {}
 
     def fetch_ohlc(self, symbol: str) -> Optional[MarketData]:
-        """Fetch current OHLC + volume for the given symbol using Zerodha."""
+        """Fetch the current bar for ``symbol`` from Zerodha's full quote.
+
+        The bar's CLOSE is the live ``last_price``, NOT the quote's ``ohlc.close``:
+        Kite populates ``ohlc.close`` with the PREVIOUS trading day's settled close,
+        so using it would price every live decision and paper fill off yesterday's
+        number (and, because that stale close sits outside today's gapped range,
+        trip the OHLC-consistency validator on gap days). ``open/high/low`` come from
+        today's ``ohlc`` block; high/low are widened to include ``last_price`` so the
+        bar stays internally consistent even on a fresh extreme tick.
+
+        One ``quote()`` call carries the OHLC block, ``last_price`` AND ``volume``
+        (a superset of ``ohlc()``), so it replaces the previous two-call fetch.
+        """
         try:
             token = self.tokens.get(symbol)
             if not token:
@@ -87,27 +103,33 @@ class ZerodhaAPI(BaseMarketDataAPI):
                 return None
 
             token_str = str(token)
-            ohlc_data = self.kite.ohlc([token])
             quote_data = self.kite.quote([token])
-
-            if token_str not in ohlc_data or token_str not in quote_data:
-                logger.error(f"Token missing in Zerodha response for {symbol}")
+            if token_str not in quote_data:
+                logger.error(f"Token missing in Zerodha quote response for {symbol}")
                 return None
 
-            ohlc = ohlc_data[token_str]["ohlc"]
-            volume = quote_data[token_str].get("volume", -1)
+            q = quote_data[token_str]
+            last_price = q.get("last_price")
+            if not last_price:
+                logger.error(f"No last_price in Zerodha quote for {symbol}")
+                return None
+
+            ohlc = q.get("ohlc") or {}
+            day_open = ohlc.get("open", last_price)
+            day_high = max(ohlc.get("high", last_price), last_price)
+            day_low = min(ohlc.get("low", last_price), last_price)
 
             timestamp = pd.Timestamp.now(tz="Asia/Kolkata").tz_localize(None)
 
             return MarketData(
                 symbol=symbol,
                 timestamp=timestamp,
-                open=ohlc["open"],
-                high=ohlc["high"],
-                low=ohlc["low"],
-                close=ohlc["close"],
-                volume=int(volume),
-                source="zerodha"
+                open=day_open,
+                high=day_high,
+                low=day_low,
+                close=last_price,        # live LTP, not the prior-day settle
+                volume=int(q.get("volume") or 0),
+                source="zerodha",
             )
 
         except Exception as e:

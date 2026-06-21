@@ -176,15 +176,45 @@ class DatabaseManager:
             return timestamp
         return str(timestamp)
 
+    @staticmethod
+    def _bucket_timestamp(timestamp, interval: str):
+        """Snap a live bar's timestamp to its interval bucket.
+
+        A live quote is stamped with wall-clock 'now', but it represents the bar
+        currently FORMING for its interval: a '1d' quote is today's daily candle
+        (open fixed, high/low/close/volume still evolving until the close), a '5m'
+        quote is the current 5-minute candle. Because the UNIQUE key includes the
+        timestamp, keying every tick at HH:MM:SS made INSERT-OR-REPLACE APPEND a
+        fresh row each cycle — so the '1d' series filled with intraday snapshots
+        and indicators read a mix of daily closes and same-day ticks. Snapping to
+        the bucket makes successive ticks OVERWRITE the period's single row in
+        place (one bar per period), which is how a candle actually forms.
+
+        Returns a naive ``pd.Timestamp``; ``_to_timestamp_str`` formats it.
+        """
+        ts = pd.Timestamp(timestamp)
+        if ts.tzinfo is not None:
+            ts = ts.tz_localize(None)
+        if interval == "1d":
+            return ts.normalize()  # 00:00:00 of the trading date
+        minutes = {"1m": 1, "5m": 5, "15m": 15, "30m": 30}.get(interval)
+        return ts.floor(f"{minutes}min") if minutes else ts
+
     def save_market_data(self, data: MarketData, interval: str = DEFAULT_DATA_INTERVAL) -> bool:
-        """Insert or replace one OHLCV bar for the given interval."""
+        """Insert or replace one OHLCV bar for the given interval.
+
+        The timestamp is bucketed to the interval (see ``_bucket_timestamp``) so a
+        live bar updated each tick overwrites the period's single row rather than
+        appending — keeping e.g. the daily series one-row-per-day.
+        """
         try:
+            bucketed = self._bucket_timestamp(data.timestamp, interval)
             self.conn.execute('''
                 INSERT OR REPLACE INTO price_data
                 (symbol, timestamp, interval, open, high, low, close, volume, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                data.symbol, self._to_timestamp_str(data.timestamp), interval,
+                data.symbol, self._to_timestamp_str(bucketed), interval,
                 data.open, data.high, data.low, data.close, data.volume,
                 getattr(data, 'source', 'unknown'),
             ))

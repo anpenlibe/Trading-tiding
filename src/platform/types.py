@@ -83,8 +83,12 @@ class BaseRiskManager(ABC):
 
     @abstractmethod
     def validate_trade(self, signal: Dict[str, Any],
-                       current_positions: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+                       current_positions: Dict[str, Any],
+                       atr: Optional[float] = None) -> Tuple[bool, Optional[str]]:
         """Validate a trade against the risk rules.
+
+        ``atr`` (the symbol's ATR(14), when available) lets validation size and
+        gate the same volatility-scaled trade execution will place.
 
         Returns ``(is_valid, reason)`` where ``reason`` explains a rejection
         (None when valid).

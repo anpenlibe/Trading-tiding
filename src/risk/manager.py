@@ -181,8 +181,10 @@ class SimpleRiskManager(BaseRiskManager):
                 (stop = entry ∓ atr_mult*ATR) instead of a flat percentage, so a
                 volatile name gets a wider stop and a quiet one a tighter stop.
             atr_mult: ATR multiple for the stop distance (default 2.0)
-            atr_target_mult: ATR multiple for the target distance (default 3.0,
-                keeping the 1.5:1 reward:risk the % defaults also use)
+            atr_target_mult: ATR multiple for the target distance (default 3.0, a
+                3:2 = 1.5:1 reward:risk. Note the % defaults give 2:1
+                (TAKE_PROFIT_PERCENT 3% / STOP_LOSS_PERCENT 1.5%); both clear the
+                1.5 minimum gate.)
 
         Returns:
             RiskParameters object with all calculations
@@ -240,9 +242,15 @@ class SimpleRiskManager(BaseRiskManager):
         actual_risk = position_size * stop_distance
         max_loss = actual_risk + commission
         
-        # Calculate risk-reward ratio
-        target_distance = abs(target - adjusted_entry)
-        actual_rr_ratio = target_distance / stop_distance if stop_distance > 0 else 0
+        # Reward:risk is a GEOMETRY ratio of the stop/target around the INTENDED
+        # entry — not the slippage-adjusted entry. Slippage is a cost (it already
+        # widens stop_distance for sizing above and feeds total_cost); folding it
+        # into this ratio shaved the ATR design's clean 3:2 = 1.50 down to ~1.47,
+        # which would trip a `>= 1.5` gate on every ATR trade. Use the raw entry so
+        # the ratio reflects the setup the trade is actually designed around.
+        rr_stop = abs(entry_price - stop_loss)
+        rr_target = abs(target - entry_price)
+        actual_rr_ratio = rr_target / rr_stop if rr_stop > 0 else 0
         
         return RiskParameters(
             position_size=position_size,
@@ -257,22 +265,28 @@ class SimpleRiskManager(BaseRiskManager):
             max_loss=max_loss
         )
     
-    def validate_trade(self, signal: Dict[str, Any], 
-                      current_positions: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    def validate_trade(self, signal: Dict[str, Any],
+                      current_positions: Dict[str, Any],
+                      atr: Optional[float] = None) -> Tuple[bool, Optional[str]]:
         """
         Validate if a trade should be taken based on risk rules.
-        
+
         Validation checks:
         1. Sufficient capital
         2. Position size limits
         3. Maximum positions
         4. Risk-reward ratio
         5. Minimum trade value
-        
+
         Args:
             signal: Trading signal with symbol, price, etc.
             current_positions: Current open positions
-            
+            atr: The symbol's ATR(14) when available. Passed so validation sizes
+                and gates the SAME trade execution will place — when ATR is present
+                the pipeline lets it set volatility-scaled stops/targets (overriding
+                the AI's templated levels), so affordability and reward:risk here
+                must be computed against the ATR levels, not the fixed-% template.
+
         Returns:
             Tuple of (is_valid, rejection_reason)
         """
@@ -317,14 +331,17 @@ class SimpleRiskManager(BaseRiskManager):
                 f"₹{max_position_value:,.0f} ({MAX_POSITION_SIZE*100:.0f}% of ₹{available_capital:,.0f})"
             )
 
-        # Calculate risk parameters
+        # Calculate risk parameters for the SAME trade execution will place: when
+        # ATR is available it sets the stops/targets (the AI's templated levels are
+        # ignored downstream), so pass it through and drop the templated levels.
         risk_params = self.calculate_risk_parameters(
             symbol=symbol,
             signal_type=signal.get('signal', 'BUY'),
             entry_price=entry_price,
             capital=available_capital,
-            stop_loss=signal.get('stop_loss'),
-            target=signal.get('target')
+            stop_loss=None if atr else signal.get('stop_loss'),
+            target=None if atr else signal.get('target'),
+            atr=atr,
         )
         
         # Check if trade value meets minimum
@@ -382,58 +399,3 @@ class SimpleRiskManager(BaseRiskManager):
             'average_position_size': total_value / len(positions) if positions else 0
         }
     
-    def suggest_position_adjustment(self, 
-                                  symbol: str,
-                                  current_price: float,
-                                  position: Dict[str, Any],
-                                  market_conditions: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Suggest position adjustments based on price movement.
-        
-        Future enhancements:
-        - Trailing stop loss based on ATR
-        - Partial profit taking
-        - Position scaling
-        
-        Args:
-            symbol: Trading symbol
-            current_price: Current market price
-            position: Current position details
-            market_conditions: Optional market indicators (volatility, trend, etc.)
-            
-        Returns:
-            Suggested adjustments
-        """
-        entry_price = position.get('entry_price', position.get('avg_price'))
-        current_stop = position.get('stop_loss')
-        is_profitable = current_price > entry_price if position.get('side') == 'LONG' else current_price < entry_price
-        
-        suggestions = {
-            'adjust_stop_loss': False,
-            'new_stop_loss': current_stop,
-            'take_partial_profit': False,
-            'add_to_position': False,
-            'close_position': False,
-            'reasoning': []
-        }
-        
-        if is_profitable:
-            # Calculate profit percentage
-            profit_pct = abs(current_price - entry_price) / entry_price
-            
-            # Suggest trailing stop if profit > 2%
-            if profit_pct > 0.02:
-                if position.get('side') == 'LONG':
-                    new_stop = current_price * (1 - self.stop_loss_percent * 0.5)  # Tighter stop
-                    if new_stop > current_stop:
-                        suggestions['adjust_stop_loss'] = True
-                        suggestions['new_stop_loss'] = new_stop
-                        suggestions['reasoning'].append(f"Trail stop to ₹{new_stop:.2f} to lock in profits")
-            
-            # Suggest partial profit if profit > 4%
-            if profit_pct > 0.04:
-                suggestions['take_partial_profit'] = True
-                suggestions['reasoning'].append("Consider taking 50% profit at 4%+ gain")
-        
-        return suggestions
-

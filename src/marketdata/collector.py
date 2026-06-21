@@ -107,15 +107,21 @@ class DataCollector:
 
     @retry_with_backoff(max_retries=2, exceptions=(DataCollectionError,))
     @performance_tracker("data_collection")
-    def collect_and_store(self, symbol: str) -> bool:
-        """Collect data with comprehensive error handling."""
+    def collect_and_store(self, symbol: str) -> Optional[MarketData]:
+        """Fetch, validate and persist the current bar; return it (or None on failure).
+
+        Returns the validated ``MarketData`` so a live caller can reuse this single
+        fetch as the current bar instead of issuing a second live quote — the bar is
+        already fetched, validated and stored here, so re-fetching it downstream was
+        pure duplication.
+        """
         try:
             # Check cache first
             cached_data = self.cache.get(f"{symbol}_recent")
             if cached_data:
                 logger.debug(f"Using cached data for {symbol}")
                 self.stats['cache_hits'] += 1
-                return True
+                return cached_data
             
             # Try each API with circuit breaker
             last_error = None
@@ -159,7 +165,7 @@ class DataCollector:
                     
                     self.stats['successful_fetches'] += 1
                     logger.info(f"Successfully collected data for {symbol} from {api_name}")
-                    return True
+                    return market_data
                     
                 except TradingSystemError:
                     # CRITICAL: Re-raise safety violations immediately - do not catch
@@ -180,7 +186,7 @@ class DataCollector:
         except Exception as e:
             logger.error(f"Critical error collecting data for {symbol}: {e}")
             self.stats['failed_fetches'] += 1
-            return False
+            return None
     
     @retry_with_backoff(max_retries=2, exceptions=(DatabaseError,))
     def _store_data(self, symbol: str, market_data: MarketData):

@@ -53,24 +53,32 @@ class AlertEngine:
             self.callbacks[alert_type] = []
         self.callbacks[alert_type].append(callback)
     
-    def check_conditions(self, market_data: Dict[str, Any]) -> List[Alert]:
-        """Check all alert conditions."""
+    def check_conditions(self, market_data: Dict[str, Any],
+                         now: Optional[datetime] = None) -> List[Alert]:
+        """Check all alert conditions.
+
+        ``now`` is the reference clock for cooldowns. Live passes nothing (defaults
+        to wall-clock); the backtest passes the current SIM timestamp so cooldowns
+        advance with market time instead of real time — otherwise a fast replay
+        burns the whole run inside one wall-clock cooldown and each rule fires once.
+        """
+        now = now or datetime.now()
         triggered_alerts = []
-        
+
         for rule in self.alert_rules:
             # Check cooldown
-            if self._in_cooldown(rule.name):
+            if self._in_cooldown(rule.name, now):
                 continue
-            
+
             # Check condition
             if rule.check(market_data):
-                alert = self._create_alert(rule, market_data)
+                alert = self._create_alert(rule, market_data, now)
                 triggered_alerts.append(alert)
                 self._trigger_alert(alert)
-                
+
                 # Set cooldown
-                self.cooldowns[rule.name] = datetime.now() + timedelta(minutes=rule.cooldown_minutes)
-        
+                self.cooldowns[rule.name] = now + timedelta(minutes=rule.cooldown_minutes)
+
         return triggered_alerts
     
     def _trigger_alert(self, alert: Alert):
@@ -82,22 +90,23 @@ class AlertEngine:
             except Exception as e:
                 logger.error(f"Callback failed: {e}")
     
-    def _in_cooldown(self, rule_name: str) -> bool:
-        """Check if rule is in cooldown."""
+    def _in_cooldown(self, rule_name: str, now: datetime) -> bool:
+        """Check if rule is in cooldown as of ``now``."""
         if rule_name in self.cooldowns:
-            return datetime.now() < self.cooldowns[rule_name]
+            return now < self.cooldowns[rule_name]
         return False
-    
-    def _create_alert(self, rule: 'AlertRule', market_data: Dict[str, Any]) -> Alert:
-        """Create alert from triggered rule."""
+
+    def _create_alert(self, rule: 'AlertRule', market_data: Dict[str, Any],
+                      now: datetime) -> Alert:
+        """Create alert from triggered rule, stamped at ``now``."""
         return Alert(
-            alert_id=f"{rule.name}_{datetime.now().timestamp()}",
+            alert_id=f"{rule.name}_{now.timestamp()}",
             type=rule.alert_type,
             symbol=market_data.get('symbol', 'UNKNOWN'),
             condition=rule.condition,
             threshold=rule.threshold,
             current_value=rule.get_current_value(market_data),
-            triggered_at=datetime.now(),
+            triggered_at=now,
             priority=rule.priority,
             metadata=rule.get_metadata(market_data)
         )
