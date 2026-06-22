@@ -204,6 +204,31 @@ def _state_age(snap_ts: str):
         return None
 
 
+def _cadence_str(session) -> str:
+    """Human-readable general/alert cadence for the header, mode-aware.
+
+    Backtest cadences are in TICKS (``general_every`` / ``alert_every``); live
+    cadences are in MINUTES (``general_min`` / ``alert_min``). The two runners
+    register different keys, so render whichever the session carries.
+    """
+    if not session:
+        return '—'
+    if session.get('mode') == 'live':
+        g, a = session.get('general_min'), session.get('alert_min')
+        if g is None and a is None:
+            return '—'
+        return f"general {g}m · alert {a}m"
+    # backtest: tick-based cadence, optionally annotated with the replay interval/step
+    g, a = session.get('general_every'), session.get('alert_every')
+    if g is None and a is None:
+        return '—'
+    main = f"general/{g} · alert/{a} ticks"
+    extra = [x for x in (session.get('interval'),
+                         f"{session.get('sim_interval_min')}m step" if session.get('sim_interval_min') else None)
+             if x]
+    return main + (f"  ({', '.join(extra)})" if extra else '')
+
+
 def render_header(state: MonitorState, state_doc, session) -> Panel:
     snap_ts = (state_doc or {}).get('timestamp', '—')
     age = _state_age(snap_ts)
@@ -224,7 +249,8 @@ def render_header(state: MonitorState, state_doc, session) -> Panel:
     line2 = Text.assemble(('sim-tick ', 'dim'), (state.last_tick or '—', 'bold cyan'),
                           ('   state @ ', 'dim'), (snap_ts, 'green'),
                           (f"  ({age:.0f}s ago)" if age is not None else '', 'dim'))
-    return Panel(Group(line1, line2), border_style=border)
+    line3 = Text.assemble(('cadence ', 'dim'), (_cadence_str(session), 'bold cyan'))
+    return Panel(Group(line1, line2, line3), border_style=border)
 
 
 def render_footer(state: MonitorState) -> Panel:
@@ -242,7 +268,7 @@ def render_footer(state: MonitorState) -> Panel:
 def build_layout(state: MonitorState, state_doc, session) -> Layout:
     root = Layout()
     root.split_column(
-        Layout(render_header(state, state_doc, session), name='header', size=4),
+        Layout(render_header(state, state_doc, session), name='header', size=5),
         Layout(name='body'),
         Layout(render_footer(state), name='footer', size=4),
     )

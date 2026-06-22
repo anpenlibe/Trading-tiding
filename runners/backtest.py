@@ -40,8 +40,13 @@ class SimulationConfig:
     enable_ai_brain: bool = True
     enable_paper_trading: bool = True
     interval: str = DEFAULT_DATA_INTERVAL  # which price_data interval to replay
-    general_pass_every: int = 1  # full general pass every N ticks; alert-driven special
-                                 # passes run on the ticks between (1 = general every tick, no alerts)
+    # General and alert cadences are INDEPENDENT (mirrors live's --general-min /
+    # --alert-min): a full general pass every `general_pass_every` ticks, and an
+    # alert check (→ single-symbol special passes) every `alert_pass_every` ticks
+    # on the ticks that aren't general ones. Defaults preserve the old behaviour:
+    # general every tick ⇒ no alert ticks ever run.
+    general_pass_every: int = 1
+    alert_pass_every: int = 1
 
 
 def select_simulation_timestamps(all_timestamps, start_date, end_date, interval_minutes):
@@ -230,6 +235,7 @@ class HistoricalSimulator:
                          capital=INITIAL_CAPITAL, interval=self.config.interval,
                          sim_interval_min=self.config.simulation_interval_minutes,
                          general_every=self.config.general_pass_every,
+                         alert_every=self.config.alert_pass_every,
                          total_ticks=len(timestamps))
 
         logger.info(f"Simulating {len(timestamps)} time points ({self.config.simulation_interval_minutes}-min intervals) from {timestamps[0] if timestamps else 'N/A'} to {timestamps[-1] if timestamps else 'N/A'}")
@@ -312,16 +318,25 @@ class HistoricalSimulator:
         if not portfolio_data:
             return
 
-        # General pass on its cadence; alert-driven special passes on the ticks between.
+        # General and alert cadences run on independent tick counters. A general
+        # tick supersedes an alert tick (the general pass already re-analyses every
+        # symbol, so checking alerts on the same tick would be redundant). Ticks
+        # that are neither still fall through to the mechanical floor below, so
+        # stops/targets are always honoured every tick regardless of cadence.
         if not (self.config.enable_ai_brain and self.pipeline):
             return
 
-        is_general = tick_index % max(1, self.config.general_pass_every) == 0
+        general_every = max(1, self.config.general_pass_every)
+        alert_every = max(1, self.config.alert_pass_every)
+        is_general = tick_index % general_every == 0
+        is_alert = (not is_general) and (tick_index % alert_every == 0)
+
+        pass_type = 'general' if is_general else ('alert' if is_alert else 'manage')
         log_event('tick', sim_time=str(timestamp), symbols=len(portfolio_data),
-                  pass_type='general' if is_general else 'alert')
+                  pass_type=pass_type)
         if is_general:
             self._run_general_pass(timestamp, portfolio_data, portfolio_indicators, current_prices)
-        else:
+        elif is_alert:
             self._run_alert_pass(timestamp, portfolio_data, portfolio_indicators, current_prices, snapshots)
 
         # Mechanical stop/target floor: AFTER the AI/alert pass had first say, mark
@@ -518,8 +533,13 @@ def build_arg_parser():
     parser.add_argument('--interval', choices=['1m', '5m', '15m', '30m', '1d'], default=DEFAULT_DATA_INTERVAL,
                         help=f'Candle interval to replay from the DB (default: {DEFAULT_DATA_INTERVAL})')
     parser.add_argument('--general-every', type=int, default=1,
-                        help='Run the general (all-symbols) pass every N ticks; alert-driven '
-                             'single-symbol special passes run on the ticks between (default: 1 = no alerts)')
+                        help='Run the general (all-symbols) pass every N ticks (default: 1 = '
+                             'every tick). With the default, no alert ticks ever run.')
+    parser.add_argument('--alert-every', type=int, default=1,
+                        help='Check alerts (→ single-symbol special passes) every N ticks, on '
+                             'ticks that are not general-pass ticks (default: 1 = every '
+                             'non-general tick). Independent of --general-every; needs '
+                             '--general-every > 1 to have any effect.')
     parser.add_argument('--sim-interval', type=int, default=30, help='Minutes between decision points (default: 30)')
     parser.add_argument('--interval-days', type=int, help='Days between decision points (overrides --sim-interval; e.g. 3)')
     parser.add_argument('--start-date', type=str, help='Explicit window start (YYYY-MM-DD)')
@@ -626,6 +646,7 @@ def main():
         simulation_interval_minutes=resolve_interval_minutes(args),
         interval=args.interval,
         general_pass_every=args.general_every,
+        alert_pass_every=args.alert_every,
     )
 
     if interactive:
