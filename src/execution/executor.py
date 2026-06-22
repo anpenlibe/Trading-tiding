@@ -69,6 +69,13 @@ class PaperTrader(BaseTradingExecutor):
             stop_loss = signal.get('stop_loss')
             target = signal.get('target')
 
+            # A SELL always closes the whole position (see _execute_sell), so the
+            # requested size is irrelevant — and an AI/rule-based signal may carry a
+            # null or oversized position_size that would otherwise crash or trip the
+            # "cannot sell N shares" gate below. Size the exit to the actual holding.
+            if action == 'SELL' and symbol in self.book.open_positions:
+                quantity = self.book.open_positions[symbol].quantity
+
             validation = self._validate_trade(symbol, action, quantity, execution_price)
             if not validation['valid']:
                 return {"status": "REJECTED", "reason": validation['reason']}

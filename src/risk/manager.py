@@ -267,7 +267,7 @@ class SimpleRiskManager(BaseRiskManager):
     
     def validate_trade(self, signal: Dict[str, Any],
                       current_positions: Dict[str, Any],
-                      atr: Optional[float] = None) -> Tuple[bool, Optional[str]]:
+                      atr: Optional[float] = None) -> Tuple[bool, Optional[str], Optional[RiskParameters]]:
         """
         Validate if a trade should be taken based on risk rules.
 
@@ -288,7 +288,9 @@ class SimpleRiskManager(BaseRiskManager):
                 must be computed against the ATR levels, not the fixed-% template.
 
         Returns:
-            Tuple of (is_valid, rejection_reason)
+            Tuple of (is_valid, rejection_reason, risk_params). risk_params is the
+            computed sizing/levels for an accepted BUY (None for a SELL or any
+            rejection), so the caller can execute it without recomputing.
         """
         symbol = signal.get('symbol')
         signal_type = signal.get('signal', 'BUY')
@@ -298,23 +300,24 @@ class SimpleRiskManager(BaseRiskManager):
         # A SELL closes an existing position. The capital / position-size /
         # "already hold this symbol" checks below are all for OPENING (BUY);
         # applying them to a SELL would reject every exit. The executor
-        # (_execute_sell) validates that a position actually exists.
+        # (_execute_sell) validates that a position actually exists and sizes the
+        # exit to the full holding, so no risk_params are needed here.
         if signal_type == 'SELL':
-            return True, None
+            return True, None, None
 
         # A BUY needs a price to size the position. Bail cleanly instead of
         # crashing on `None * slippage` downstream (which callers swallow as a
         # silent non-execution).
         if entry_price is None:
-            return False, "No entry price provided for trade"
+            return False, "No entry price provided for trade", None
 
         # Check if we already have a position in this symbol
         if symbol in current_positions:
-            return False, f"Already have open position in {symbol}"
-        
+            return False, f"Already have open position in {symbol}", None
+
         # Check minimum capital
         if available_capital < MIN_TRADE_VALUE:
-            return False, f"Insufficient capital: ₹{available_capital:.2f} < ₹{MIN_TRADE_VALUE}"
+            return False, f"Insufficient capital: ₹{available_capital:.2f} < ₹{MIN_TRADE_VALUE}", None
 
         # Capital-adaptive affordability gate: a single share priced above the
         # per-position cap (capital × MAX_POSITION_SIZE) can't be held within risk
@@ -329,7 +332,7 @@ class SimpleRiskManager(BaseRiskManager):
             return False, (
                 f"{symbol} @ ₹{entry_price:,.0f} exceeds max position "
                 f"₹{max_position_value:,.0f} ({MAX_POSITION_SIZE*100:.0f}% of ₹{available_capital:,.0f})"
-            )
+            ), None
 
         # Calculate risk parameters for the SAME trade execution will place: when
         # ATR is available it sets the stops/targets (the AI's templated levels are
@@ -346,22 +349,23 @@ class SimpleRiskManager(BaseRiskManager):
         
         # Check if trade value meets minimum
         if risk_params.position_value < MIN_TRADE_VALUE:
-            return False, f"Trade value ₹{risk_params.position_value:.2f} below minimum ₹{MIN_TRADE_VALUE}"
-        
+            return False, f"Trade value ₹{risk_params.position_value:.2f} below minimum ₹{MIN_TRADE_VALUE}", None
+
         # Check if position size exceeds maximum allowed
         if risk_params.position_value > available_capital * MAX_POSITION_SIZE:
-            return False, f"Position size exceeds {MAX_POSITION_SIZE*100}% of capital"
-        
+            return False, f"Position size exceeds {MAX_POSITION_SIZE*100}% of capital", None
+
         # Check risk-reward ratio
         if risk_params.risk_reward_ratio < 1.5:
-            return False, f"Risk-reward ratio {risk_params.risk_reward_ratio:.1f} below minimum 1.5"
-        
+            return False, f"Risk-reward ratio {risk_params.risk_reward_ratio:.1f} below minimum 1.5", None
+
         # Check if we can afford the trade
         if risk_params.total_cost > available_capital:
-            return False, f"Total cost ₹{risk_params.total_cost:.2f} exceeds available capital ₹{available_capital:.2f}"
-        
-        # All checks passed
-        return True, None
+            return False, f"Total cost ₹{risk_params.total_cost:.2f} exceeds available capital ₹{available_capital:.2f}", None
+
+        # All checks passed — hand back the params so the caller executes exactly
+        # what was validated (no second calculate_risk_parameters call).
+        return True, None, risk_params
     
     def calculate_portfolio_risk(self, positions: Dict[str, Any], 
                                current_prices: Dict[str, float]) -> Dict[str, float]:

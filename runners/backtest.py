@@ -383,7 +383,7 @@ class HistoricalSimulator:
 
             for ex in result['executed']:
                 self._record_trade(timestamp, ex['symbol'], ex['decision'], ex['price'],
-                                   result['market_analysis'][:200])
+                                   result['market_analysis'][:200], result=ex['result'])
 
             non_hold = len([d for d in decisions.values() if d.get('signal') != 'HOLD'])
             logger.info(f"Portfolio analysis completed: {len(decisions)} symbols analyzed, {non_hold} signals generated")
@@ -413,7 +413,7 @@ class HistoricalSimulator:
                 ex = out.get('executed')
                 if ex and ex.get('status') == 'EXECUTED':
                     self._record_trade(timestamp, symbol, d, current_prices[symbol],
-                                       f"SPECIAL pass (alert on {symbol})")
+                                       f"SPECIAL pass (alert on {symbol})", result=ex)
                     # The book changed — re-derive stop/target/recheck alert levels
                     # so a just-opened position is managed (or a closed one stops
                     # waking us) without waiting for the next general pass.
@@ -421,18 +421,24 @@ class HistoricalSimulator:
             except Exception as e:
                 logger.error(f"Special pass error for {symbol}: {e}")
 
-    def _record_trade(self, timestamp, symbol, decision, price, market_analysis):
-        """Append an executed trade to the run's trade log + bump the counter."""
+    def _record_trade(self, timestamp, symbol, decision, price, market_analysis, result=None):
+        """Append an executed trade to the run's trade log + bump the counter.
+
+        ``result`` is the executor's fill dict when available — the AUTHORITATIVE
+        sized quantity + applied stop/target. The decision dict only holds the AI's
+        pre-risk intent (position_size/stop/target are null under ATR sizing), so we
+        prefer the fill and fall back to the decision."""
+        result = result or {}
         self.trades_executed.append({
             'timestamp': timestamp,
             'symbol': symbol,
             'action': decision['signal'],
             'price': price,
-            'quantity': decision.get('position_size', 1),
+            'quantity': result.get('quantity', decision.get('position_size', 1)),
             'reasoning': decision.get('reasoning', ''),
             'confidence': decision.get('confidence', 0),
-            'stop_loss': decision.get('stop_loss'),
-            'target': decision.get('target'),
+            'stop_loss': result.get('stop_loss', decision.get('stop_loss')),
+            'target': result.get('target', decision.get('target')),
             'market_analysis': market_analysis,
         })
         self.simulation_stats['trades_count'] += 1

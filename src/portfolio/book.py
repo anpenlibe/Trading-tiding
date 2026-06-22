@@ -122,9 +122,13 @@ class Portfolio:
 
         self.available_capital += net_proceeds
         self.total_commission += commission
+        # A break-even close (exactly 0) is a scratch — neither win nor loss. Keeping
+        # it out of losing_trades stops it diluting avg_loss (which divides by that
+        # count); win_rate uses total closed as its denominator, so a scratch still
+        # correctly counts as a non-win there.
         if realized_pnl > 0:
             self.winning_trades += 1
-        else:
+        elif realized_pnl < 0:
             self.losing_trades += 1
 
         self.closed_trades.append(position)
@@ -259,16 +263,22 @@ class Portfolio:
         return max_losses
 
     def _calculate_sharpe_ratio(self) -> float:
-        """Sharpe ratio (simplified, per-trade)."""
+        """Per-trade Sharpe: mean / std of realized per-trade % returns.
+
+        A per-trade (not annualized) ratio computed entirely in percent units. The
+        per-trade risk-free rate is negligible at this granularity (a few-day hold),
+        so it's omitted rather than mixed in as a fraction against percent returns —
+        the old code subtracted a ~3e-6 fraction from percent-scale returns, a unit
+        mismatch. Higher = more return per unit of trade-to-trade volatility.
+        """
         returns = [t.pnl_percent for t in self.closed_trades]
         if len(returns) < 2:
             return 0.0
-        avg_return = sum(returns) / len(returns)
         std_return = pd.Series(returns).std()
         if std_return == 0:
             return 0.0
-        risk_free_rate = 0.06 / 252 / 78  # 6% annual / 252 days / ~78 trades per day
-        return (avg_return - risk_free_rate) / std_return
+        avg_return = sum(returns) / len(returns)
+        return avg_return / std_return
 
     def _calculate_profit_factor(self) -> float:
         """Gross profit / gross loss."""

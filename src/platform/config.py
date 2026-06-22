@@ -364,16 +364,6 @@ def is_market_hours(timestamp=None):
         return False
     return market_open <= current_time <= market_close
 
-def calculate_position_size(capital: float, risk_percent: float, entry_price: float, stop_loss: float) -> int:
-    risk_amount   = capital * risk_percent
-    risk_per_share= abs(entry_price - stop_loss)
-    if risk_per_share <= 0:
-        return 0
-    position_size = int(risk_amount / risk_per_share)
-    min_shares    = int(MIN_TRADE_VALUE / entry_price) + 1
-    max_shares    = int((capital * MAX_POSITION_SIZE) / entry_price)
-    return min(max(position_size, min_shares), max_shares)
-
 
 # Print configuration summary
 # Test mode detection
@@ -383,7 +373,7 @@ if TEST_MODE:
     logger.warning("TEST MODE ACTIVE - Using relaxed trading limits")
 
     # Override production limits for testing
-    MIN_TRADE_VALUE = 100.0  # ₹100 instead of ₹500
+    MIN_TRADE_VALUE = 100.0  # ₹100 instead of ₹3000
     MAX_POSITION_SIZE = 0.50  # 50% instead of 20%
     MAX_RISK_PER_TRADE = 0.05  # 5% instead of 1.5%
 

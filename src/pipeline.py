@@ -99,49 +99,47 @@ class TradingPipeline:
         """Risk-validate + size + execute one signal at ``current_price``.
 
         ``atr`` (the symbol's ATR(14), when available) makes the risk manager scale
-        stops/targets to the stock's own volatility instead of a flat percentage."""
+        stops/targets to the stock's own volatility instead of a flat percentage.
+
+        Execution layers its own fields (sized position, ATR stops, slippage-adjusted
+        entry) onto a COPY of the signal, so the caller's decision dict keeps the AI's
+        original values — the executed parameters travel back via the returned fill,
+        not by mutating shared state."""
         try:
-            # The fill happens at the current market price; stamp it on the signal
-            # so risk sizing doesn't crash on a missing entry_price (otherwise
-            # swallowed as a silent non-execution).
-            if signal.get('entry_price') is None:
-                signal['entry_price'] = current_price
+            order = dict(signal)
+            order['symbol'] = symbol
+            # The fill happens at the current market price; stamp it so risk sizing
+            # doesn't crash on a missing entry_price (otherwise swallowed as a
+            # silent non-execution).
+            if order.get('entry_price') is None:
+                order['entry_price'] = current_price
 
             if self.risk_manager is not None:
                 account_info = self.executor.get_account_info()
-                signal['available_capital'] = account_info['available_capital']
+                order['available_capital'] = account_info['available_capital']
 
-                is_valid, rejection_reason = self.risk_manager.validate_trade(
-                    signal, self.executor.get_positions(), atr=atr
+                is_valid, rejection_reason, risk_params = self.risk_manager.validate_trade(
+                    order, self.executor.get_positions(), atr=atr
                 )
                 if not is_valid:
                     return {'status': 'REJECTED', 'reason': rejection_reason}
 
-                # When ATR is available, let it set volatility-scaled stops/targets
-                # rather than the AI's templated levels — the single-symbol prompt
-                # tells the model to echo entry*0.985 / entry*1.03, so its stop is
-                # boilerplate, not a considered level. ATR adapts per stock instead.
-                stop_in = None if atr else signal.get('stop_loss')
-                target_in = None if atr else signal.get('target')
-                risk_params = self.risk_manager.calculate_risk_parameters(
-                    symbol=symbol,
-                    signal_type=signal['signal'],
-                    entry_price=current_price,
-                    capital=account_info['available_capital'],
-                    stop_loss=stop_in,
-                    target=target_in,
-                    atr=atr,
-                )
-                signal.update({
-                    'position_size': risk_params.position_size,
-                    'stop_loss': risk_params.stop_loss,
-                    'target': risk_params.target,
-                    'entry_price': risk_params.entry_price,
-                    'risk_amount': risk_params.risk_amount,
-                })
+                # validate_trade already sized this exact trade — ATR-scaled when ATR
+                # is present (the single-symbol prompt leaves stop_loss/target null
+                # precisely because the system applies ATR levels), the AI's templated
+                # ±% ignored. Reuse its result rather than recomputing; a second
+                # compute could silently drift from what was actually validated.
+                # risk_params is None for a SELL (a full close needs no sizing).
+                if risk_params is not None:
+                    order.update({
+                        'position_size': risk_params.position_size,
+                        'stop_loss': risk_params.stop_loss,
+                        'target': risk_params.target,
+                        'entry_price': risk_params.entry_price,
+                        'risk_amount': risk_params.risk_amount,
+                    })
 
-            signal['symbol'] = symbol
-            return self.executor.execute_trade(signal, current_price)
+            return self.executor.execute_trade(order, current_price)
 
         except Exception as e:
             logger.debug(f"Trade execution error for {symbol}: {e}")
