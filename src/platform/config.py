@@ -142,14 +142,14 @@ HISTORICAL_DATA_PATH = os.path.join(DATA_PATH, "historical")
 LIVE_DATA_PATH       = os.path.join(DATA_PATH, "live")
 
 # Database path. A single SQLite DB holds all market data (historical + runtime).
-# It is generated locally via apps/data_collector.py from Zerodha and is
+# It is generated locally via runners/download.py from Zerodha and is
 # gitignored — not committed — so each user populates their own with their token.
 REPO_ROOT         = os.path.dirname(BASE_PATH)
 RUNTIME_DATA_PATH = os.path.join(REPO_ROOT, "data")
 DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")
 
 # ============= AI PROVIDER SETTINGS =============
-# The AI provider fallback chain lives in src/ai/provider_coordinator.py, which
+# The AI provider fallback chain lives in src/decision/providers.py, which
 # owns its config via env: it reads ENABLED_AI_PROVIDERS (default "groq,gemini")
 # and the numbered key pools (GROQ_API_KEY_1..N, GEMINI_API_KEY_1..N) directly.
 # The Groq and Gemini models are FIXED in the coordinator's chain — there are no
@@ -178,7 +178,7 @@ RATE_LIMIT_COOLDOWN_SEC = int(os.getenv('RATE_LIMIT_COOLDOWN_SEC', '60'))
 
 # Paper Trading Settings
 # PAPER_TRADE_COMMISSION is a legacy flat per-trade fee, superseded by the
-# turnover-based Indian-equity charge model in src/core/transaction_costs.py.
+# turnover-based Indian-equity charge model in src/execution/costs.py.
 # Kept (default 0.0) as an optional extra fixed fee on top of computed charges.
 PAPER_TRADE_COMMISSION = float(os.getenv("PAPER_TRADE_COMMISSION", "0.0"))
 PAPER_TRADE_SLIPPAGE   = float(os.getenv("PAPER_TRADE_SLIPPAGE", "0.0005"))
@@ -400,7 +400,7 @@ if TEST_MODE:
 
 # ============= TRADING MODE =============
 # paper (default) | live | backtest. Mode-specific safety lives in
-# src/core/trading_modes.py. There is no mock data source to guard against —
+# src/platform/modes.py. There is no mock data source to guard against —
 # Zerodha is the only source, so live mode simply requires a Zerodha session.
 TRADING_MODE = os.getenv('TRADING_MODE', 'paper')
 

@@ -149,7 +149,7 @@ class DatabaseManager:
             n = self.conn.execute("SELECT COUNT(*) FROM price_data").fetchone()[0]
             logger.warning(
                 "Migrating price_data to interval-aware schema: dropping %d legacy "
-                "single-interval rows (re-download via apps/data_collector.py)", n,
+                "single-interval rows (re-download via runners/download.py)", n,
             )
             self.conn.execute("DROP TABLE price_data")
             self.conn.commit()

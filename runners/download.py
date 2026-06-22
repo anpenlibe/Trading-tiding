@@ -11,8 +11,8 @@ indicators per candle — the feature layer computes indicators on demand, and t
 ``indicators`` table is unused — so a ~1M-row pull stays fast.
 
 Examples:
-    python apps/data_collector.py --interval 1m --period 6mo
-    python apps/data_collector.py --interval 1d --days 545          # ~18 months daily
+    python runners/download.py --interval 1m --period 6mo
+    python runners/download.py --interval 1d --days 545          # ~18 months daily
 """
 
 import argparse

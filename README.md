@@ -21,9 +21,15 @@ project and a paper-trading simulator — not investment advice.** See the
 - **Two-pass AI brain.** A **general pass** scores all symbols at once (Gemini
   Flash), and AI-triggered **special passes** deep-dive a single symbol on an alert
   (fast Groq gpt-oss). The model also emits its own alerts and a watchlist.
-- **Multi-key, rate-limit-proof.** Groq + Gemini key *pools* cycle per call (keys
-  2-4 in backtest, key 1 reserved for live), with per-(model,key) circuit breakers
-  and a rule-based fallback when everything is exhausted.
+- **Intent-driven alerts.** Between general passes the system only wakes on what it
+  cares about: held positions are managed by their own stop/target/recheck levels,
+  watchlist names by the AI's price conditions, and a technical backstop
+  (RSI/MACD/volume) runs on watchlist stocks only — so indicator noise can flag an
+  *entry* but never churns an *exit*.
+- **Multi-key, rate-limit aware.** Groq + Gemini key *pools* (keys 2-4 in backtest,
+  key 1 reserved for live) are round-robined per call and throttled to stay under
+  the free-tier tokens-per-minute ceiling, with per-(model,key) circuit breakers and
+  a rule-based fallback when everything is exhausted.
 - **23 features + market context.** RSI/MACD/SMA plus ATR, Bollinger %B/bandwidth,
   OBV, RSI trajectory, MACD-cross state, Stochastic, ROC, range-position, volume
   trend — fed to the AI alongside **market regime**, **sector**, and **held-position
@@ -166,10 +172,10 @@ for market-regime context.
 
 ## Documentation
 
-- [`docs/SYSTEM_FLOW.md`](./docs/SYSTEM_FLOW.md) — end-to-end flow + the two modes
-- [`docs/ALERT_BASED_TRADING_SYSTEM.md`](./docs/ALERT_BASED_TRADING_SYSTEM.md) — the general/special-pass + alert design
 - [`src/decision/README.md`](./src/decision/README.md) — the multi-provider AI layer
-- Per-module reference: docstrings in `src/` are the single source of truth.
+- Per-module reference: docstrings in `src/` are the single source of truth — the
+  general/special-pass + alert design lives in `src/alerts/manager.py` and
+  `src/decision/prompts.py` headers.
 
 ## Project status
 
