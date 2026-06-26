@@ -368,6 +368,14 @@ class HistoricalSimulator:
                 'positions': current_positions,  # full per-symbol state for owned-stock context
                 'account_info': account_info or {},
             }
+            # Memory threaded from the PREVIOUS general pass (alert_manager still holds it;
+            # update_from_general below overwrites with this pass). Repairs the long-dead
+            # context['watchlist'] seam + carries watch intent and the decision trail.
+            if self.alert_manager:
+                context['watchlist'] = self.alert_manager.get_watchlist_symbols()
+                context['watchlist_thesis'] = self.alert_manager.get_watchlist_intent()
+            if self.ai_brain:
+                context['decision_trail'] = self.ai_brain.recent_decisions_by_symbol(3)
 
             result = self.pipeline.run_decisions(
                 portfolio_data, portfolio_indicators, current_prices, context
@@ -391,35 +399,43 @@ class HistoricalSimulator:
             logger.error(f"Portfolio analysis error at {timestamp}: {e}")
 
     def _run_alert_pass(self, timestamp, portfolio_data, portfolio_indicators, current_prices, snapshots):
-        """Between general passes: check alerts; each triggered symbol gets a fast
-        single-symbol SPECIAL pass (gpt-oss) -> risk -> execute."""
+        """Between general passes: ONE consolidated review over open positions (recheck +
+        manage) ∪ surfaced candidates (consider, skeptically). Replaces the per-symbol
+        special-pass fan-out — one AI call, positions always rechecked."""
         if not self.alert_manager:
             return
         triggered = self.alert_manager.evaluate(snapshots, now=timestamp)
-        if not triggered:
+        positions = self.paper_trader.get_positions()
+        owned = [s for s in positions if positions[s].get('quantity', 0) > 0 and s in portfolio_data]
+        candidates = [s for s in triggered if s in portfolio_data and s not in owned]
+        if not owned and not candidates:
             return
-        logger.info(f"Alerts triggered at {timestamp}: {list(triggered)}")
-        for symbol in triggered:
-            if symbol not in portfolio_data:
-                continue
-            try:
-                out = self.pipeline.run_special(
-                    symbol, portfolio_data[symbol], portfolio_indicators[symbol], current_prices[symbol],
-                    alert_context=triggered[symbol]
-                )
-                self.simulation_stats['ai_decisions'] += 1
-                d = out['decision']
-                logger.info(f"Special pass {symbol}: {d.get('signal')} (conf {d.get('confidence')})")
-                ex = out.get('executed')
-                if ex and ex.get('status') == 'EXECUTED':
-                    self._record_trade(timestamp, symbol, d, current_prices[symbol],
-                                       f"SPECIAL pass (alert on {symbol})", result=ex)
-                    # The book changed — re-derive stop/target/recheck alert levels
-                    # so a just-opened position is managed (or a closed one stops
-                    # waking us) without waiting for the next general pass.
-                    self.alert_manager.refresh(self.paper_trader.get_positions())
-            except Exception as e:
-                logger.error(f"Special pass error for {symbol}: {e}")
+        review = owned + candidates
+        context = {
+            'timestamp': timestamp,
+            'positions': positions,
+            'current_positions': owned,
+            'account_info': self.paper_trader.get_account_info(),
+            'alert_context': triggered,
+        }
+        try:
+            out = self.pipeline.run_alert_review(
+                {s: portfolio_data[s] for s in review},
+                {s: portfolio_indicators[s] for s in review},
+                {s: current_prices[s] for s in review if s in current_prices},
+                context, owned, candidates,
+                regime_indicators=portfolio_indicators,  # full universe for the breadth gate
+            )
+            self.simulation_stats['ai_decisions'] += len(out['decisions'])
+            for ex in out['executed']:
+                self._record_trade(timestamp, ex['symbol'], ex['decision'], ex['price'],
+                                   'ALERT review', result=ex['result'])
+            if out['executed']:
+                self.alert_manager.refresh(self.paper_trader.get_positions())
+            logger.info(f"Alert review at {timestamp}: {len(review)} symbols "
+                        f"({len(owned)} held + {len(candidates)} candidates), {len(out['executed'])} executed")
+        except Exception as e:
+            logger.error(f"Alert review error at {timestamp}: {e}")
 
     def _record_trade(self, timestamp, symbol, decision, price, market_analysis, result=None):
         """Append an executed trade to the run's trade log + bump the counter.

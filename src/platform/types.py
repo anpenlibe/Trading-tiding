@@ -65,12 +65,17 @@ class BaseMarketDataAPI(ABC):
 
 
 class BaseDecisionModel(ABC):
-    """Contract for a model that turns market data + indicators into a signal."""
+    """Contract for a model that turns a portfolio of market data + indicators into
+    per-symbol decisions. The general (all-symbols) pass is the primary entry point;
+    the consolidated alert review reuses the same per-symbol action contract."""
 
     @abstractmethod
-    def analyze(self, market_data: pd.DataFrame, indicators: Dict[str, float]) -> Dict[str, Any]:
-        """Return a decision dict with signal (BUY/SELL/HOLD), confidence,
-        reasoning, and optional stop_loss / target."""
+    def analyze_portfolio_with_intelligent_fallback(
+            self, portfolio_data: Dict[str, pd.DataFrame],
+            portfolio_indicators: Dict[str, Dict[str, float]],
+            context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Return ``{'market_analysis', 'decisions': {symbol: decision}}`` for all
+        symbols, with multi-provider fallback handled internally."""
 
 
 class BaseRiskManager(ABC):

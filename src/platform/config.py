@@ -159,6 +159,26 @@ DB_PATH           = os.path.join(RUNTIME_DATA_PATH, "market_data.sqlite")
 STOP_LOSS_PERCENT     = float(os.getenv("STOP_LOSS_PERCENT", "0.015"))
 TAKE_PROFIT_PERCENT   = float(os.getenv("TAKE_PROFIT_PERCENT", "0.03"))
 
+# Conviction — make the model's `confidence` load-bearing end-to-end.
+# Below the floor, a BUY/ADD is forced to HOLD in code (exits/risk-reduction are never
+# gated). Above the floor, confidence scales risk_per_trade linearly from
+# CONVICTION_RISK_FLOOR_FRAC*MAX_RISK_PER_TRADE (at confidence == MIN_ACT_CONFIDENCE) up to
+# MAX_RISK_PER_TRADE (at confidence == 1.0). The hard caps (MAX_RISK_PER_TRADE,
+# MAX_POSITION_SIZE) remain the ceiling — conviction only moves WITHIN them.
+MIN_ACT_CONFIDENCE        = float(os.getenv("MIN_ACT_CONFIDENCE", "0.6"))
+CONVICTION_RISK_FLOOR_FRAC = float(os.getenv("CONVICTION_RISK_FLOOR_FRAC", "0.5"))
+
+# Persisted watchlist intent (reason + alert levels) so a live restart doesn't forget the
+# AI's standing watchlist between general passes. Filename only; runners join with LOGS_DIR.
+WATCHLIST_STATE_FILE      = os.getenv("WATCHLIST_STATE_FILE", "watchlist_state.json")
+
+# Candidate surfacing (mean-reversion-in-trend) + regime gate. The alert layer surfaces
+# DIPS in strong names for consideration, not momentum breakouts; and entries are blocked
+# in a weak-breadth tape so the AI can only manage/exit, never open new longs in a downtrend.
+RSI_PULLBACK_MAX   = float(os.getenv("RSI_PULLBACK_MAX", "35"))    # oversold-ish dip threshold
+SUPPORT_BAND_PCT   = float(os.getenv("SUPPORT_BAND_PCT", "1.0"))   # % proximity to SMA support
+REGIME_BREADTH_MIN = float(os.getenv("REGIME_BREADTH_MIN", "0.40"))  # min frac above SMA50 to allow entries
+
 # Emergency Threshold Defaults (for AI monitoring system)
 EMERGENCY_STOP_LOSS_PCT = float(os.getenv('EMERGENCY_STOP_LOSS_PCT', '-3.5'))  # Default -3.5%
 EMERGENCY_TAKE_PROFIT_PCT = float(os.getenv('EMERGENCY_TAKE_PROFIT_PCT', '4.0'))  # Default +4.0%
@@ -344,6 +364,12 @@ def validate_config():
         errors.append("INITIAL_CAPITAL must be positive")
     if not 0 < MAX_RISK_PER_TRADE <= 0.05:
         errors.append("MAX_RISK_PER_TRADE should be between 0 and 5%")
+    if not 0 <= MIN_ACT_CONFIDENCE <= 1:
+        errors.append("MIN_ACT_CONFIDENCE must be between 0 and 1")
+    if not 0 < CONVICTION_RISK_FLOOR_FRAC <= 1:
+        errors.append("CONVICTION_RISK_FLOOR_FRAC must be in (0, 1]")
+    if not 0 <= REGIME_BREADTH_MIN <= 1:
+        errors.append("REGIME_BREADTH_MIN must be between 0 and 1")
     if not SYMBOLS:
         errors.append("No symbols configured for trading")
     if errors:

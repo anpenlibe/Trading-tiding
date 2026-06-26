@@ -63,6 +63,22 @@ class PaperTrade:
     unrealized_pnl: Optional[float] = None
     pnl_percent: Optional[float] = None
 
+    # Multi-tranche accounting (ADD / TRIM). `entry_price` above is the volume-weighted
+    # AVERAGE cost and `quantity` the CURRENT open size; these track partial realizations
+    # so a TRIMmed-then-closed position reports LIFETIME realized P&L (not just the last leg).
+    realized_pnl_partial: float = 0.0   # booked P&L from TRIMs while still OPEN
+    cost_basis_closed: float = 0.0      # avg-cost basis already removed by TRIMs (lifetime %)
+    total_buy_quantity: int = 0         # cumulative shares acquired (BUY + ADDs)
+
+    # Thesis memory — the position's REASON, carried over time so the AI manages a
+    # holding against its own original intent instead of re-rating it blind each pass.
+    # entry_thesis is immutable (why we opened); thesis is the evolving current view;
+    # thesis_status ∈ {intact, weakening, invalidated}. Seeded from the decision's
+    # reasoning at entry; the model revises thesis/thesis_status once the prompt does.
+    entry_thesis: Optional[str] = None
+    thesis: Optional[str] = None
+    thesis_status: str = "intact"
+
 
 class Portfolio:
     """Account state: cash, positions, realized/unrealized P&L, and metrics."""
@@ -104,31 +120,61 @@ class Portfolio:
         self._log_trade(trade)
 
     def close(self, symbol: str, exit_price: float, net_proceeds: float,
-              commission: float, exit_reason: str = 'SIGNAL') -> Dict[str, float]:
-        """Close the whole position, credit net proceeds, realize P&L. Returns the
-        realized P&L. Recompute happens AFTER the del so the closed position's
-        proceeds (already in cash) aren't double-counted in current_capital."""
+              commission: float, exit_reason: str = 'SIGNAL',
+              quantity: Optional[int] = None) -> Dict[str, float]:
+        """Realize P&L against AVERAGE cost and credit net proceeds.
+
+        ``quantity=None`` (or >= the open size) is a FULL close — the position moves to
+        closed_trades and reports LIFETIME realized P&L (this leg + any prior TRIMs).
+        A smaller ``quantity`` is a PARTIAL exit (TRIM): the open slice shrinks, its
+        prorated entry commission is removed, the leg's realized P&L is booked to
+        ``realized_pnl_partial``, and the position stays OPEN (no win/loss tally — a
+        partial is not a closed trade). Recompute happens after any del so proceeds
+        already in cash aren't double-counted in current_capital."""
         position = self.open_positions[symbol]
-        cost_basis = position.entry_price * position.quantity
-        realized_pnl = net_proceeds - cost_basis - position.commission
-        pnl_percent = (realized_pnl / cost_basis) * 100
+        full = quantity is None or quantity >= position.quantity
+        leg_qty = position.quantity if full else quantity
+
+        cost_removed = position.entry_price * leg_qty
+        # Prorate the entry-side commission still carried on the open slice, so the
+        # trimmed shares bear their share and the remainder isn't double-charged later.
+        entry_comm_alloc = position.commission * (leg_qty / position.quantity)
+        leg_realized = net_proceeds - cost_removed - entry_comm_alloc
+        leg_pct = (leg_realized / cost_removed * 100) if cost_removed else 0.0
+
+        self.available_capital += net_proceeds
+        self.total_commission += commission
+
+        if not full:
+            position.quantity -= leg_qty
+            position.commission -= entry_comm_alloc
+            position.position_value -= cost_removed
+            position.realized_pnl_partial += leg_realized
+            position.cost_basis_closed += cost_removed
+            self.recompute()
+            self._log_partial(position, leg_qty, leg_realized, exit_price, exit_reason)
+            return {"realized_pnl": leg_realized, "pnl_percent": leg_pct,
+                    "partial": True, "remaining_quantity": position.quantity}
+
+        # Full (final) close: report lifetime realized over the whole position's life.
+        lifetime_realized = position.realized_pnl_partial + leg_realized
+        lifetime_cost = position.cost_basis_closed + cost_removed
+        lifetime_pct = (lifetime_realized / lifetime_cost * 100) if lifetime_cost else 0.0
 
         position.exit_price = exit_price
         position.exit_timestamp = datetime.now().isoformat()
         position.exit_reason = exit_reason
-        position.realized_pnl = realized_pnl
-        position.pnl_percent = pnl_percent
+        position.realized_pnl = lifetime_realized
+        position.pnl_percent = lifetime_pct
         position.status = "CLOSED"
 
-        self.available_capital += net_proceeds
-        self.total_commission += commission
         # A break-even close (exactly 0) is a scratch — neither win nor loss. Keeping
         # it out of losing_trades stops it diluting avg_loss (which divides by that
         # count); win_rate uses total closed as its denominator, so a scratch still
-        # correctly counts as a non-win there.
-        if realized_pnl > 0:
+        # correctly counts as a non-win there. Keyed off LIFETIME realized.
+        if lifetime_realized > 0:
             self.winning_trades += 1
-        elif realized_pnl < 0:
+        elif lifetime_realized < 0:
             self.losing_trades += 1
 
         self.closed_trades.append(position)
@@ -136,7 +182,42 @@ class Portfolio:
         self.recompute()
         self._log_trade(position)
 
-        return {"realized_pnl": realized_pnl, "pnl_percent": pnl_percent}
+        return {"realized_pnl": lifetime_realized, "pnl_percent": lifetime_pct,
+                "partial": False, "remaining_quantity": 0}
+
+    def add_to_position(self, symbol: str, add_quantity: int, fill_price: float,
+                        add_commission: float, total_cost: float):
+        """Scale into an existing position (ADD): re-average entry cost, grow the open
+        size, debit cash. Average cost is computed on the fill price (slippage-included,
+        charges excluded) — consistent with how cost basis is booked elsewhere."""
+        pos = self.open_positions[symbol]
+        new_qty = pos.quantity + add_quantity
+        pos.entry_price = (pos.quantity * pos.entry_price + add_quantity * fill_price) / new_qty
+        pos.quantity = new_qty
+        pos.total_buy_quantity += add_quantity
+        pos.position_value += add_quantity * fill_price
+        pos.commission += add_commission
+        self.available_capital -= total_cost
+        self.total_commission += add_commission
+        self.recompute()
+        self._log_partial(pos, add_quantity, 0.0, fill_price, 'ADD')
+
+    def set_stop(self, symbol: str, new_stop: float):
+        """Move a position's stop (MOVE_STOP). Tighten-only validation lives in the
+        executor — the book stays a dumb state-store."""
+        self.open_positions[symbol].stop_loss = new_stop
+
+    def update_thesis(self, symbol: str, thesis: Optional[str] = None,
+                      status: Optional[str] = None):
+        """Evolve a held position's thesis/thesis_status (entry_thesis stays immutable).
+        No-op for fields left None, so a pass that only revises status keeps the prose."""
+        pos = self.open_positions.get(symbol)
+        if pos is None:
+            return
+        if thesis is not None:
+            pos.thesis = thesis
+        if status is not None:
+            pos.thesis_status = status
 
     def mark_to_market(self, current_prices: Dict[str, float]):
         """Refresh unrealized P&L for open positions, then recompute capital."""
@@ -180,6 +261,10 @@ class Portfolio:
                 "target": p.target,
                 "entry_time": p.timestamp,
                 "emergency_recheck_pct": p.emergency_recheck_pct,
+                # Thesis memory (additive keys — existing consumers ignore them).
+                "entry_thesis": p.entry_thesis,
+                "thesis": p.thesis,
+                "thesis_status": p.thesis_status,
             }
             for symbol, p in self.open_positions.items()
         }
@@ -295,6 +380,20 @@ class Portfolio:
                 f.write(json.dumps(asdict(trade), default=str) + '\n')
         except Exception as e:
             logger.error(f"Error logging trade: {e}")
+
+    def _log_partial(self, position: PaperTrade, leg_qty: int, leg_realized: float,
+                     leg_price: float, event: str):
+        """Append a partial-event line (ADD / TRIM) for a still-OPEN position. Same flat
+        JSON-lines shape as a full trade plus additive `event`/`leg_*` keys, so existing
+        readers tolerate it (unknown keys ignored) and the position's lifecycle reads as
+        OPEN -> ADD/TRIM... -> CLOSED across multiple lines sharing one trade_id."""
+        try:
+            record = {**asdict(position), 'event': event, 'leg_quantity': leg_qty,
+                      'leg_realized_pnl': round(leg_realized, 2), 'leg_price': round(leg_price, 2)}
+            with open(self.trade_log_file, 'a') as f:
+                f.write(json.dumps(record, default=str) + '\n')
+        except Exception as e:
+            logger.error(f"Error logging partial: {e}")
 
     def write_state(self, path: Optional[str] = None):
         """Dump a point-in-time account + positions snapshot for the live monitor.

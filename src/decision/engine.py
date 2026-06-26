@@ -12,10 +12,10 @@ import time
 from typing import Dict, Any, Optional, List
 import pandas as pd
 
-from src.platform.types import BaseDecisionModel, MarketData
+from src.platform.types import BaseDecisionModel
 from src.decision.prompts import PromptBuilder
 from src.decision.providers import ProviderCoordinator, build_portfolio_chain, build_symbol_chain
-from src.decision.fallback import rule_based_decision, rule_based_portfolio
+from src.decision.fallback import rule_based_portfolio
 from src.platform.config import MAX_DECISION_HISTORY
 from src.platform.logger import setup_logger, LOGS_DIR
 from src.platform.errors import AIAnalysisError
@@ -73,113 +73,6 @@ class AIBrain(BaseDecisionModel):
             raise AIAnalysisError(f"AI initialization failed: {e}")
 
 
-    @performance_tracker("ai_analysis")
-    def analyze(self, market_data: pd.DataFrame,
-               indicators: Dict[str, float], alert_context=None, position=None) -> Dict[str, Any]:
-        """Analyze one symbol. ``alert_context`` (list of fired alerts) is the trigger
-        reason for an alert-driven special pass; ``position`` is our held-position
-        state (entry/P&L/stop/target) when we own the stock. Both are rendered into
-        the prompt so the model knows WHY it's asked and WHAT it already holds."""
-        try:
-            # Validate data format first — without a usable DataFrame even the
-            # rule-based fallback can't run, so a safe HOLD is the only option.
-            if isinstance(market_data, dict):
-                logger.error(f"Received dict instead of DataFrame: {list(market_data.keys())}")
-                return self._safe_default_response("Data format error - expected DataFrame")
-
-            if not hasattr(market_data, 'iloc'):
-                logger.error(f"Invalid market_data type: {type(market_data)}")
-                return self._safe_default_response("Invalid data format")
-
-            # Extract the latest bar once — both the AI path and the rule-based
-            # fallback below need it.
-            symbol = market_data['symbol'].iloc[-1] if 'symbol' in market_data else "UNKNOWN"
-            current_price = float(market_data['close'].iloc[-1])
-            latest_data = MarketData(
-                symbol=symbol,
-                timestamp=pd.Timestamp.now(),
-                open=float(market_data['open'].iloc[-1]),
-                high=float(market_data['high'].iloc[-1]),
-                low=float(market_data['low'].iloc[-1]),
-                close=current_price,
-                volume=float(market_data['volume'].iloc[-1])
-            )
-
-            # Circuit breaker: after too many consecutive provider failures, skip
-            # the (doomed) API round-trip — but STILL run the rule-based fallback,
-            # which makes no API calls. This used to return a blind HOLD, which
-            # silently disabled the RSI fallback for the rest of a degraded run
-            # (every remaining symbol got HOLD 0.0 instead of a real signal).
-            if self.consecutive_failures >= self.max_consecutive_failures:
-                logger.warning(
-                    f"AI circuit breaker open ({self.consecutive_failures} failures) - using rule-based fallback"
-                )
-                return rule_based_decision(latest_data, indicators)
-
-            # Build context
-            context = {
-                'strategy': 'swing',
-                'risk_level': 'moderate',
-                'market_hours': True,
-                'alert_trigger': alert_context,  # why this special pass fired (or None)
-                'position': position,            # what we hold in this symbol (or None)
-            }
-            
-            # Create prompt
-            prompt = self.prompt_builder.create_analysis_prompt(
-                symbol, market_data, indicators, context
-            )
-
-            # Get AI response
-            try:
-                response_text = self._get_ai_response(prompt)
-            except Exception as e:
-                # AI provider failed for this call: degrade gracefully to the
-                # rule-based fallback, but still record the failure so the
-                # circuit breaker (max_consecutive_failures) can escalate.
-                self.consecutive_failures += 1
-                logger.warning(f"AI response failed, using rule-based fallback: {e}")
-                return rule_based_decision(latest_data, indicators)
-
-            # Parse response
-            try:
-                decision = self.prompt_builder.parse_response(
-                    response_text, current_price
-                )
-            except ValueError as e:
-                # parse_response raises ValueError on any unparseable AI output
-                # (JSONDecodeError is a ValueError subclass, so this covers both).
-                provider = self.symbol_coordinator.get_current_provider() or "AI"
-                logger.warning(f"Failed to parse {provider} response: {e}")
-                return self._safe_default_response("Parse error")
-
-            # Validate decision
-            if not self._validate_decision(decision):
-                provider = self.symbol_coordinator.get_current_provider() or "AI"
-                logger.warning(f"Invalid decision from {provider}")
-                return self._safe_default_response("Invalid decision")
-            
-            # NOTE: sizing/stops/targets are intentionally NOT computed here. The
-            # brain decides; the risk manager sizes. Every decision is routed through
-            # TradingPipeline._execute, which computes volatility-scaled (ATR) risk
-            # parameters against the LIVE available capital and overwrites anything
-            # set here — so doing it now (against INITIAL_CAPITAL) was dead work that
-            # only risked a stale, capital-blind position size leaking out.
-
-            # Reset failure counter on success
-            self.consecutive_failures = 0
-            
-            # Log decision
-            self._log_decision(symbol, decision, market_data, indicators)
-            
-            logger.info(f"AI Decision: {decision['signal']} ({decision['confidence']:.1%})")
-            return decision
-            
-        except Exception as e:
-            logger.error(f"AI analysis failed: {e}")
-            self.consecutive_failures += 1
-            return self._safe_default_response(f"Analysis error: {e}")
-    
     def _validate_decision(self, decision: Dict[str, Any]) -> bool:
         """Validate AI decision structure."""
         required_fields = ['signal', 'confidence', 'reasoning']
@@ -189,8 +82,8 @@ class AIBrain(BaseDecisionModel):
             if field not in decision:
                 return False
         
-        # Validate signal
-        if decision['signal'] not in ['BUY', 'SELL', 'HOLD']:
+        # Validate signal — full action vocabulary (BUY/SELL/HOLD + TRIM/ADD/MOVE_STOP).
+        if decision['signal'] not in ('BUY', 'SELL', 'HOLD', 'TRIM', 'ADD', 'MOVE_STOP'):
             return False
         
         # Validate confidence
@@ -214,15 +107,12 @@ class AIBrain(BaseDecisionModel):
             'risk_amount': None
         }
     
-    def _get_ai_response(self, prompt: str, max_tokens: Optional[int] = None) -> str:
-        """Get AI response using coordinator with automatic fallback.
+    def _get_ai_response(self, prompt: str, max_tokens: Optional[int] = None,
+                         pass_type: str = 'special') -> str:
+        """Get AI response via the fast single-symbol coordinator (short prompts).
 
-        Args:
-            prompt: The prompt to send
-            max_tokens: Optional max_tokens override
-
-        Returns:
-            AI response text
+        Used by the special pass and the consolidated alert review; ``pass_type`` stamps
+        the telemetry so the two are distinguishable in the event stream.
         """
         start_time = time.time()
 
@@ -233,8 +123,8 @@ class AIBrain(BaseDecisionModel):
         logger.info(f"AI response from {provider} in {duration:.2f}s")
         logger.debug(f"Response: {response_text[:200]}...")  # Log first 200 chars
 
-        self._last_model, self._last_pass = provider, 'special'
-        log_event('ai_call', model=provider, latency=round(duration, 2), pass_type='special')
+        self._last_model, self._last_pass = provider, pass_type
+        log_event('ai_call', model=provider, latency=round(duration, 2), pass_type=pass_type)
         return response_text
 
     def _get_portfolio_ai_response(self, prompt: str) -> str:
@@ -280,7 +170,12 @@ class AIBrain(BaseDecisionModel):
             log_event('decision', symbol=symbol, signal=decision['signal'],
                       confidence=round(float(decision['confidence']), 3),
                       model=self._last_model, pass_type=self._last_pass,
-                      price=float(market_data['close'].iloc[-1]))
+                      price=float(market_data['close'].iloc[-1]),
+                      # Surface reasoning + thesis_status so rule-following (did the model
+                      # act on its trigger? evolve its thesis?) is measurable from the
+                      # event stream, not just buried in text logs.
+                      reasoning=str(decision.get('reasoning', ''))[:240],
+                      thesis_status=decision.get('thesis_status'))
 
         except Exception as e:
             logger.warning(f"Failed to log decision: {e}")
@@ -288,6 +183,26 @@ class AIBrain(BaseDecisionModel):
     def get_decision_history(self) -> list:
         """Get recent decision history."""
         return self.decision_history.copy()
+
+    def recent_decisions_by_symbol(self, n: int = 3) -> Dict[str, List[Dict[str, Any]]]:
+        """Last ``n`` decisions per symbol (most-recent-first) — the continuity trail
+        threaded into the prompt so the model sees its own recent calls on a name and
+        doesn't thrash (re-buy what it just sold, re-rate flat what it's been holding).
+        Compact by design: only signal/confidence/reasoning, capped at n per symbol."""
+        trail: Dict[str, List[Dict[str, Any]]] = {}
+        for rec in reversed(self.decision_history):
+            sym = rec.get('symbol')
+            if not sym:
+                continue
+            bucket = trail.setdefault(sym, [])
+            if len(bucket) < n:
+                bucket.append({
+                    'signal': rec.get('signal'),
+                    'confidence': rec.get('confidence'),
+                    'reasoning': str(rec.get('reasoning', ''))[:120],
+                    'timestamp': str(rec.get('timestamp', '')),
+                })
+        return trail
     
     def get_performance_stats(self) -> Dict[str, Any]:
         """Get AI performance statistics."""
@@ -418,6 +333,51 @@ class AIBrain(BaseDecisionModel):
             logger.error(f"Portfolio analysis error: {e}")
             self.consecutive_failures += 1
             return self._safe_portfolio_default_response(list(portfolio_data.keys()), f"Analysis error: {str(e)}")
+
+    @performance_tracker("alert_review")
+    def analyze_alert_review(self, portfolio_data: Dict[str, pd.DataFrame],
+                             portfolio_indicators: Dict[str, Dict[str, float]],
+                             owned_symbols, candidate_symbols,
+                             context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Consolidated mid-cycle review over open positions ∪ surfaced candidates — ONE
+        short prompt on the fast symbol chain → per-symbol decisions (same contract the
+        portfolio parser reads). Degrades to the rule-based fallback like the other passes."""
+        context = context or {}
+        if self.consecutive_failures >= self.max_consecutive_failures:
+            logger.warning("AI circuit breaker open - rule-based fallback for alert review")
+            return rule_based_portfolio(portfolio_data, portfolio_indicators)
+
+        prompt = self.prompt_builder.create_alert_review_prompt(
+            portfolio_data, portfolio_indicators, owned_symbols, candidate_symbols, context
+        )
+        try:
+            response_text = self._get_ai_response(prompt, pass_type='alert_review')
+        except Exception as e:
+            logger.warning(f"Alert-review AI call failed, rule-based fallback: {e}")
+            self.consecutive_failures += 1
+            return rule_based_portfolio(portfolio_data, portfolio_indicators)
+
+        try:
+            parsed = self.prompt_builder.parse_portfolio_response(response_text, portfolio_data, context)
+        except ValueError as e:
+            provider = self.symbol_coordinator.get_current_provider() or "AI"
+            logger.warning(f"Failed to parse {provider} alert-review response: {e}")
+            return self._safe_portfolio_default_response(list(portfolio_data.keys()), "Parse error")
+
+        validated = {}
+        for symbol, decision in parsed.get('decisions', {}).items():
+            if self._validate_decision(decision):
+                validated[symbol] = decision
+                try:
+                    self._log_decision(symbol, decision, portfolio_data[symbol],
+                                       portfolio_indicators.get(symbol, {}))
+                except Exception as log_error:
+                    logger.debug(f"Could not log alert-review decision for {symbol}: {log_error}")
+            else:
+                validated[symbol] = self._safe_default_response(f"Invalid decision for {symbol}")
+
+        self.consecutive_failures = 0
+        return {'market_analysis': parsed.get('market_analysis', ''), 'decisions': validated}
 
     def _safe_portfolio_default_response(self, symbols: List[str], reason: str) -> Dict[str, Any]:
         """Safe default response for portfolio analysis."""

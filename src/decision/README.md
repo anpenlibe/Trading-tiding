@@ -9,14 +9,14 @@ Claude was removed.
 ```
 ┌───────────────────────────────────────────────┐
 │                    AIBrain                     │
-│              src/core/ai_brain.py              │
-│   analyze() (single) / analyze_portfolio_*()   │
+│             src/decision/engine.py             │
+│  general pass  ·  consolidated alert review    │
 └───────────────────────┬────────────────────────┘
                         │
                         ▼
 ┌───────────────────────────────────────────────┐
 │              ProviderCoordinator               │
-│         src/ai/provider_coordinator.py         │
+│           src/decision/providers.py            │
 │  - Builds fallback chain from env + key pools  │
 │  - Per-(provider:model) circuit breakers       │
 │  - Rate-limit cooldown + automatic switching   │
@@ -39,7 +39,7 @@ one key AND appears in `ENABLED_AI_PROVIDERS` (default `groq,gemini`):
 2. **Groq `llama-3.3-70b-versatile`** (separate rate-limit pool)
 3. **Groq `openai/gpt-oss-20b`** (fast fallback)
 4. **Gemini `gemini-2.5-pro`** (reliable but slower)
-5. **Rule-based** (final fallback — RSI-based, no API call; lives in `ai_brain.py`)
+5. **Rule-based** (final fallback — RSI-based, no API call; `decision/fallback.py`)
 
 ## API Keys (numbered pools)
 
@@ -50,9 +50,10 @@ GROQ_API_KEY_1=...    GROQ_API_KEY_2=...    # (GROQ_API_KEY also accepted)
 GEMINI_API_KEY_1=...  GEMINI_API_KEY_2=...  # (GEMINI_API_KEY also accepted)
 ```
 
-`_collect_provider_keys()` gathers `PROVIDER_API_KEY` + `PROVIDER_API_KEY_1..N`,
-de-duplicated. **Phase 1 uses the first available key per provider**; full
-per-call cycling across the pool (1 key live / 3 keys backtest) is a later phase.
+Keys are a **mode-aware pool** (`decision/keys.py`): **key 1 for live**, **keys 2-4
+for backtest** (disjoint, so a backtest can't starve the live session). The
+coordinator round-robins the starting key per call and paces calls per provider to
+stay under the free-tier TPM ceiling.
 
 ## Key Features
 
@@ -66,30 +67,30 @@ per-call cycling across the pool (1 key live / 3 keys backtest) is a later phase
 ## Module Structure
 
 ```
-src/ai/
+src/decision/
 ├── README.md                  # This file
-├── clients/
-│   ├── base_client.py         # Abstract BaseAIClient
-│   ├── gemini_client.py       # Gemini REST client
-│   └── groq_client.py         # Groq OpenAI-compatible REST client
-├── provider_coordinator.py    # Fallback coordination + key pools
-└── prompt_builder.py          # Prompt construction + response parsing
+├── engine.py                  # AIBrain — general pass + consolidated alert review
+├── prompts.py                 # Prompt construction + response parsing (PromptBuilder)
+├── providers.py               # Fallback coordination + provider chains
+├── keys.py                    # Mode-aware numbered key pools
+├── fallback.py                # Rule-based RSI fallback (no API call)
+└── clients/                   # base · groq · gemini REST clients
 ```
 
 ## Usage
 
 ```python
-from src.core.ai_brain import AIBrain
+from src.decision.engine import AIBrain
 
-ai = AIBrain()
-# Portfolio (all symbols at once — the path backtest uses):
+ai = AIBrain(mode="backtest")
+# General pass — all symbols at once, reasoning-first (the primary entry point):
 result = ai.analyze_portfolio_with_intelligent_fallback(portfolio_data, portfolio_indicators, context)
-# Single symbol:
-decision = ai.analyze(market_data_df, indicators)
+# Consolidated alert review — open positions (manage) + surfaced candidates (consider):
+review = ai.analyze_alert_review(portfolio_data, portfolio_indicators, owned, candidates, context)
 ```
 
 ```python
-from src.ai.provider_coordinator import ProviderCoordinator
+from src.decision.providers import ProviderCoordinator
 coord = ProviderCoordinator()
 coord.get_current_provider()   # e.g. "groq:openai/gpt-oss-120b"
 coord.get_status()             # failures + circuit-breaker state
@@ -107,9 +108,9 @@ GEMINI_API_KEY_1=your-gemini-key
 ENABLED_AI_PROVIDERS=groq,gemini
 ```
 
-Groq and Gemini models are **fixed** in `_get_default_fallback_chain` (no
-`GROQ_MODEL`/`GEMINI_MODEL` knobs); temperature is set in code via
-`AIBrain(temperature=...)`.
+Groq and Gemini models are **fixed** in the chain builders (`providers.build_portfolio_chain`
+/ `build_symbol_chain`) — no `GROQ_MODEL`/`GEMINI_MODEL` knobs; temperature is set in
+code via `AIBrain(temperature=...)`.
 
 ## Notes on rate limits
 - Groq portfolio calls cap `max_tokens` to stay within the per-model TPM limit.

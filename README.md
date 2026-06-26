@@ -18,14 +18,23 @@ project and a paper-trading simulator — not investment advice.** See the
 - **Two modes, one core.** A backtest runner (replays the local DB, fast-forward)
   and a live runner (real-time Zerodha data) share the *exact same* decision
   pipeline — they differ only in ingestion and timing.
-- **Two-pass AI brain.** A **general pass** scores all symbols at once (Gemini
-  Flash), and AI-triggered **special passes** deep-dive a single symbol on an alert
-  (fast Groq gpt-oss). The model also emits its own alerts and a watchlist.
-- **Intent-driven alerts.** Between general passes the system only wakes on what it
-  cares about: held positions are managed by their own stop/target/recheck levels,
-  watchlist names by the AI's price conditions, and a technical backstop
-  (RSI/MACD/volume) runs on watchlist stocks only — so indicator noise can flag an
-  *entry* but never churns an *exit*.
+- **Two-pass AI brain.** A **general pass** reviews all symbols at once (Gemini
+  Flash → llama-70b), and a **consolidated alert review** between general passes
+  rechecks open positions *and* weighs surfaced candidates in a single short call
+  (fast Groq gpt-oss). The model emits its own alert levels and a watchlist.
+- **Reasoning-first agency.** Decisions are produced *reasoning first* (thesis →
+  then action), and the model does more than BUY/SELL/HOLD: it **TRIM**s (partial
+  exit), **ADD**s (scales in), and **MOVE_STOP**s (trails a stop to lock gains),
+  managing each position against an evolving thesis — *intact → weakening →
+  invalidated* — carried across passes.
+- **Conviction- and regime-gated.** `confidence` is load-bearing: it **gates**
+  (a sub-floor BUY/ADD becomes no trade) and **sizes** (higher conviction → bigger
+  position, within the risk cap). New longs are **blocked in a weak-breadth tape**
+  (regime gate) — in a downtrend the AI can only manage or exit, never open risk.
+- **Mean-reversion surfacing.** Between general passes the alert layer surfaces
+  *dips in strong names* for consideration — oversold while above SMA50, a pullback
+  to MA support — not momentum breakouts; and every open position is rechecked each
+  alert cycle for anything unexpected.
 - **Multi-key, rate-limit aware.** Groq + Gemini key *pools* (keys 2-4 in backtest,
   key 1 reserved for live) are round-robined per call and throttled to stay under
   the free-tier tokens-per-minute ceiling, with per-(model,key) circuit breakers and
@@ -33,10 +42,11 @@ project and a paper-trading simulator — not investment advice.** See the
 - **23 features + market context.** RSI/MACD/SMA plus ATR, Bollinger %B/bandwidth,
   OBV, RSI trajectory, MACD-cross state, Stochastic, ROC, range-position, volume
   trend — fed to the AI alongside **market regime**, **sector**, and **held-position
-  context** (entry/P&L/duration).
-- **Volatility-aware risk.** ATR-based dynamic stops (per-stock), position sizing
-  under a per-position cap, and an affordability check using the **real** Indian-
-  equity turnover charge model (STT, exchange, GST, stamp, DP).
+  context** (entry/P&L/duration/thesis).
+- **Volatility-aware risk.** ATR-based dynamic stops (per-stock), **multi-tranche
+  average-cost accounting** (so TRIM/ADD realize correct P&L), position sizing under
+  a per-position cap, and an affordability check using the **real** Indian-equity
+  turnover charge model (STT, exchange, GST, stamp, DP).
 
 ---
 
@@ -75,12 +85,17 @@ differs between backtest and live is the `MarketDataSource` behind the feed
    dict of 23 indicators; a breadth-based market-regime summary is computed across
    symbols.
 3. **Decision** — `AIBrain` runs two prompt-specific provider chains: the long
-   all-symbols prompt on **Gemini Flash → llama-70b**, and the short single-symbol
-   special-pass prompt on **gpt-oss-120b → llama-70b → gpt-oss-20b → Flash**. All
-   key-cycled; rule-based RSI fallback if exhausted.
-4. **Risk + execution** — `SimpleRiskManager` sets ATR-scaled stops/targets and
-   sizes the position; `PaperTrader` records the fill against a `Portfolio` book
-   with realistic slippage + turnover charges and tracks P&L.
+   all-symbols **general** prompt on **Gemini Flash → llama-70b**, and the short
+   **alert-review** prompt (open positions + surfaced candidates) on
+   **gpt-oss-120b → llama-70b → gpt-oss-20b → Flash**. Both are reasoning-first and
+   key-cycled; a rule-based fallback covers provider exhaustion. The model returns a
+   per-symbol action from `BUY / SELL / HOLD / TRIM / ADD / MOVE_STOP` plus an
+   updated thesis.
+4. **Risk + execution** — `SimpleRiskManager` applies the **confidence floor** and
+   **regime gate** (no new longs in weak breadth), sizes the position by conviction
+   under the per-position cap, and sets ATR-scaled stops/targets; `PaperTrader`
+   records the fill against a `Portfolio` book using multi-tranche average-cost
+   accounting, with realistic slippage + turnover charges, and tracks P&L.
 
 ## Requirements
 

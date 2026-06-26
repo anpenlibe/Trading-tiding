@@ -4,12 +4,26 @@ import json
 import pandas as pd
 from typing import Dict, Any
 from src.platform.config import (
-    INITIAL_CAPITAL, MAX_RISK_PER_TRADE, STOP_LOSS_PERCENT,
-    TAKE_PROFIT_PERCENT, RECENT_DATA_LOOKBACK,
-    EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT
+    INITIAL_CAPITAL, MAX_RISK_PER_TRADE,
+    EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT,
+    MIN_ACT_CONFIDENCE,
 )
 from src.features.indicators import summarize_market_regime
 from src.platform.registry import get_stock_registry
+
+# The action contract: the full verb vocabulary the pipeline/executor honor. SELL is a
+# full close; TRIM/ADD/MOVE_STOP act on a held position. Anything else parses to HOLD.
+VALID_SIGNALS = {'BUY', 'SELL', 'HOLD', 'TRIM', 'ADD', 'MOVE_STOP'}
+
+
+def _coerce_float(value, default=None):
+    """Float or default — keeps one malformed numeric field from sinking a whole decision."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _sector_map(symbols) -> Dict[str, str]:
@@ -70,6 +84,23 @@ class PromptBuilder:
             return f"{default:.{decimals}f}"
 
     @staticmethod
+    def na(value, decimals=1):
+        """Render a missing indicator as 'n/a' rather than a fabricated neutral default.
+
+        safe_format substitutes a midpoint (RSI 50, SMA=price, vs-SMA 0%) for None, which
+        a decision prompt reads as 'genuinely neutral' — indistinguishable from 'not warmed
+        up yet'. For values where that confusion would mislead the model (trend/SMA during
+        SMA-200 warmup), show 'n/a' so the model knows the signal is absent, not neutral."""
+        if value is None or (hasattr(value, '__len__') and not isinstance(value, str)):
+            return "n/a"
+        try:
+            if pd.isna(value):
+                return "n/a"
+            return f"{float(value):.{decimals}f}"
+        except (ValueError, TypeError):
+            return "n/a"
+
+    @staticmethod
     def extract_emergency_thresholds(thresholds: dict, is_owned: bool, signal: str) -> dict:
         """Extract thresholds with consistent defaults."""
         # Apply thresholds if AI provided them, position is owned, or signal is active
@@ -95,171 +126,6 @@ class PromptBuilder:
             }
     
     @staticmethod
-    def create_analysis_prompt(symbol: str, 
-                             market_data: pd.DataFrame,
-                             indicators: Dict[str, float],
-                             context: Dict[str, Any] = None) -> str:
-        """Create a structured single-symbol analysis prompt for the AI."""
-        
-        if context is None:
-            context = {}
-        
-        # Get recent price action
-        recent_data = market_data.tail(RECENT_DATA_LOOKBACK)
-        current = market_data.iloc[-1]
-        
-        # Calculate key metrics safely
-        try:
-            price_change_5d = ((current['close'] - market_data['close'].iloc[-5]) / 
-                              market_data['close'].iloc[-5] * 100) if len(market_data) >= 5 else 0
-        except (IndexError, KeyError, ZeroDivisionError):
-            price_change_5d = 0
-        
-        try:
-            high_20d = market_data['high'].tail(20).max() if len(market_data) >= 20 else current['high']
-            low_20d = market_data['low'].tail(20).min() if len(market_data) >= 20 else current['low']
-        except (KeyError, AttributeError):
-            high_20d = current.get('high', current.get('close', 0))
-            low_20d = current.get('low', current.get('close', 0))
-        
-        # Volume analysis
-        current_volume = current.get('volume', 0)
-        avg_volume = indicators.get('volume_avg_20', current_volume)
-        try:
-            volume_ratio = current_volume / avg_volume if avg_volume and avg_volume > 0 else 1.0
-        except (TypeError, ZeroDivisionError):
-            volume_ratio = 1.0
-        
-        # Safe current price
-        try:
-            current_price = float(current['close'])
-        except (KeyError, TypeError, ValueError):
-            current_price = 100.0  # Fallback price
-        
-        # Why this special pass fired — the breached alert(s). Telling the model the
-        # trigger turns a generic re-analysis into a reaction to a specific event.
-        alert_section = ""
-        alert_trigger = context.get('alert_trigger')
-        if alert_trigger:
-            lines = []
-            for a in alert_trigger:
-                # Prefer the specific condition (approaching_stop / macd_bullish_cross /
-                # price_above …) over the coarse enum type — it tells the model exactly
-                # what tripped, including whether it's managing its own stop/target.
-                t = (a.get('condition') or a.get('type') or 'alert').replace('_', ' ')
-                val = PromptBuilder.safe_format(a.get('value'))
-                thr = a.get('threshold')
-                lines.append(f"- {t}: current {val}" + (f" (threshold {PromptBuilder.safe_format(thr)})" if thr else ""))
-            alert_section = (
-                f"\nWHY YOU ARE ANALYZING {symbol} NOW (alert(s) fired since the last full review — "
-                f"act on this trigger, don't just re-rate the stock):\n" + "\n".join(lines) + "\n")
-
-        # Held-position context: if we own this symbol, tell the model our entry,
-        # P&L and stop/target so it can MANAGE the position (trim/hold/exit) rather
-        # than re-rate it as if flat. Mirrors the portfolio prompt's position line.
-        position = context.get('position')
-        if position and position.get('quantity'):
-            pos_section = (
-                f"\nYOUR CURRENT POSITION IN {symbol} (you own this — decide whether to HOLD, add, or SELL):\n"
-                f"- Qty {position.get('quantity')} @ entry ₹{PromptBuilder.safe_format(position.get('entry_price'))}"
-                f" | unrealized P&L {PromptBuilder.safe_format(position.get('pnl_percent'), 0, 1)}%"
-                f" | stop ₹{PromptBuilder.safe_format(position.get('stop_loss'))}"
-                f" target ₹{PromptBuilder.safe_format(position.get('target'))}\n")
-        else:
-            pos_section = f"\nYOU DO NOT HOLD {symbol} (a SELL is not possible — choose BUY or HOLD).\n"
-
-        sf = PromptBuilder.safe_format
-        ind = indicators
-        macd_state = "above-signal" if ind.get('macd') is not None and ind.get('macd_signal') is not None and ind.get('macd') > ind.get('macd_signal') else "below-signal"
-        capital = context.get('capital', INITIAL_CAPITAL)
-
-        prompt = f"""You are a disciplined swing trader for NSE (Indian) equities, holding 2-5 days.
-You are being asked about ONE stock, {symbol}, right now — for the specific reason below. \
-Act on that reason; don't re-rate the stock from scratch.
-{alert_section}{pos_section}
-PRICE & VOLUME ({symbol}):
-- Last ₹{current_price:.2f} | day ₹{sf(current.get('low', current_price))}–₹{sf(current.get('high', current_price))} | 20-day ₹{sf(low_20d, current_price)}–₹{sf(high_20d, current_price)}
-- Volume {current_volume:,} ({volume_ratio:.2f}x 20d avg) | 5-day change {price_change_5d:.2f}%
-
-TREND (where price sits vs its moving averages):
-- SMA20 ₹{sf(ind.get('sma_20'), current_price)} / SMA50 ₹{sf(ind.get('sma_50'), current_price)} / SMA200 ₹{sf(ind.get('sma_200'), current_price)}
-- Price vs SMA20/50: {sf(ind.get('price_vs_sma20_pct'), 0, 1)}% / {sf(ind.get('price_vs_sma50_pct'), 0, 1)}%  (positive = above = uptrend)
-
-MOMENTUM:
-- RSI14 {sf(ind.get('rsi_14'), 50, 1)} (Δ3 {sf(ind.get('rsi_trajectory'), 0, 1)}; >70 overbought, <30 oversold) | Stoch %K/%D {sf(ind.get('stoch_k'), 50, 0)}/{sf(ind.get('stoch_d'), 50, 0)} | ROC10 {sf(ind.get('roc_10'), 0, 1)}%
-- MACD {sf(ind.get('macd'), 0)} / signal {sf(ind.get('macd_signal'), 0)} / hist {sf(ind.get('macd_histogram'), 0)} ({macd_state})
-
-VOLATILITY & FLOW:
-- ATR14 {sf(ind.get('atr_14'))} | Bollinger %B {sf(ind.get('bollinger_pct_b'), 0, 2)} (BW {sf(ind.get('bollinger_bandwidth'), 0, 1)}%; >1 above upper band, <0 below lower) | range-pos {sf(ind.get('range_position'), 0, 2)} | OBV-trend {sf(ind.get('obv_trend'), 0, 2)}
-
-HOW TO DECIDE:
-- Start from the reason you were woken (the trigger and your position, if any), then confirm or veto it with trend + momentum + volume. Favor confluence over any single indicator.
-- Capital is limited (₹{capital}) — protect it. When the signal is mixed, HOLD.
-- Calibrate confidence: 0.5 = coin-flip/unclear, 0.6–0.7 = decent confluence, 0.8+ = strong multi-signal setup. Only act (BUY/SELL) above 0.6; otherwise HOLD.
-- You may leave stop_loss and target null — the system applies volatility-scaled (ATR) levels, so a templated ±% is not useful.
-
-Respond with ONLY this JSON object, no other text:
-{{
-    "signal": "BUY | SELL | HOLD",
-    "confidence": 0.0-1.0,
-    "reasoning": "1-2 sentences naming the trigger and the indicators that decided it",
-    "entry_price": null,
-    "stop_loss": null,
-    "target": null
-}}
-
-Rules: SELL is only valid if you hold {symbol}. For BUY/SELL set entry_price to the current price (₹{current_price:.2f}); for HOLD set entry_price, stop_loss and target all to null."""
-        
-        return prompt
-    
-    @staticmethod
-    def parse_response(response_text: str, current_price: float = 100.0) -> Dict[str, Any]:
-        """Parse the AI's single-symbol JSON response into a decision dict."""
-        try:
-            # Find JSON in response (Claude sometimes includes explanatory text)
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}') + 1
-            
-            if start_idx == -1 or end_idx == 0:
-                raise ValueError("No JSON found in response")
-            
-            json_str = response_text[start_idx:end_idx]
-            data = json.loads(json_str)
-            
-            # Extract and validate signal data
-            signal = data.get('signal', 'HOLD').upper()
-            confidence = float(data.get('confidence', 0.5))
-            reasoning = data.get('reasoning', 'No reasoning provided')
-            
-            # Ensure signal is valid
-            if signal not in ['BUY', 'SELL', 'HOLD']:
-                signal = 'HOLD'
-            
-            # Ensure confidence is in valid range
-            confidence = max(0.0, min(1.0, confidence))
-            
-            # Parse price-related fields
-            entry_price = data.get('entry_price', current_price)
-            stop_loss = data.get('stop_loss')
-            target = data.get('target')
-            
-            return {
-                'signal': signal,
-                'confidence': confidence,
-                'reasoning': reasoning,
-                'entry_price': entry_price,
-                'stop_loss': stop_loss,
-                'target': target
-            }
-
-        except Exception as e:
-            # Parse-or-raise: a parser must not fabricate a HOLD, which would hide
-            # the failure and pollute decision history with a fake decision. Raise a
-            # uniform ValueError (mirroring parse_portfolio_response) and let the
-            # engine — the single owner of degradation policy — choose the fallback.
-            raise ValueError(f"Failed to parse single-symbol response: {e}")
-    
-    @staticmethod
     def create_portfolio_analysis_prompt(portfolio_data: Dict[str, pd.DataFrame],
                                        portfolio_indicators: Dict[str, Dict[str, float]],
                                        context: Dict[str, Any] = None) -> str:
@@ -278,29 +144,35 @@ Rules: SELL is only valid if you hold {symbol}. For BUY/SELL set entry_price to 
         positions = context.get('positions', {})
         sector_map = _sector_map(symbols_list)
 
-        # Categorize stocks by ownership and watchlist
+        # Categorize stocks by ownership and watchlist. previous_watchlist now actually
+        # flows from the prior pass (runners thread context['watchlist']); watchlist_thesis
+        # carries WHY each was flagged, decision_trail the recent calls per symbol.
         owned_stocks = [s for s in symbols_list if s in current_positions]
         previous_watchlist = context.get('watchlist', [])
+        watchlist_thesis = context.get('watchlist_thesis', {})
+        decision_trail = context.get('decision_trail', {})
         watchlist_stocks = [s for s in symbols_list if s in previous_watchlist and s not in current_positions]
-        remaining_stocks = [s for s in symbols_list if s not in current_positions and s not in previous_watchlist]
+
+        floor = MIN_ACT_CONFIDENCE
 
         prompt = f"""You are an expert portfolio swing trader for NSE (Indian) equities, holding 2-5 days.
-Analyze these {num_symbols} stocks together and return a decision for EACH.
+Analyze these {num_symbols} stocks together and return a decision for EACH — reasoning first, so the call follows from it.
 
 ACCOUNT:
 - Available capital ₹{available_capital:.2f} | max risk {context.get('max_risk', MAX_RISK_PER_TRADE)*100:.1f}% per trade | {context.get('timestamp', 'Current')}
 - Market regime: {_regime_line(portfolio_indicators)}
 
 ACTION RULES (enforced in code — violations are dropped, so don't waste them):
-- [OWNED] you hold it  → SELL or HOLD only; always return revised emergency_thresholds for it.
+- [OWNED] you hold it → MANAGE it: HOLD, SELL (exit), TRIM (cut part, set trim_fraction), ADD (scale in), or MOVE_STOP (lock gains, set new_stop). Update its thesis_status (intact/weakening/invalidated). A profitable position with an INTACT thesis → MOVE_STOP/TRIM/HOLD, NEVER a reflexive SELL; SELL is for an INVALIDATED thesis. Always return revised emergency_thresholds.
 - [WATCH] / [NEW] you don't hold it → BUY or HOLD only.
-- You own the watchlist: flag a stock worth tracking with "watchlist": true + alert_conditions; drop ones that no longer interest you. Give a one-line watchlist_reason.
+- CONFIDENCE both GATES and SIZES: below {floor:.2f} we do nothing (HOLD); at/above it a higher number takes a bigger position. {floor:.2f}=starter, 0.75=solid, 0.9+=high. Don't inflate it.
+- You own the watchlist: flag a stock worth tracking with "watchlist": true + a one-line watchlist_reason + alert_conditions; drop ones that no longer interest you.
 - Between full reviews, the system watches OWNED + WATCH every few minutes and wakes you on a single stock the moment one of its alert_conditions levels is crossed — so set those levels where you'd actually want to act.
 
 OWNED ({len(owned_stocks)}): {', '.join(owned_stocks) if owned_stocks else 'none'}
 WATCHLIST ({len(watchlist_stocks)}): {', '.join(watchlist_stocks) if watchlist_stocks else 'none'}
 
-STOCKS (positive vs-SMA% = above = uptrend; RSI >70 overbought / <30 oversold):
+STOCKS (positive vs-SMA% = above = uptrend; RSI >70 overbought / <30 oversold; n/a = not warmed up):
 """
 
         # Add each symbol's data
@@ -340,7 +212,7 @@ STOCKS (positive vs-SMA% = above = uptrend; RSI >70 overbought / <30 oversold):
 
                 if is_owned:
                     category = "[OWNED]"
-                    allowed_actions = "SELL/HOLD"
+                    allowed_actions = "HOLD/SELL/TRIM/ADD/MOVE_STOP"
                 elif is_watchlist:
                     category = "[WATCH]"
                     allowed_actions = "BUY/HOLD"
@@ -349,84 +221,197 @@ STOCKS (positive vs-SMA% = above = uptrend; RSI >70 overbought / <30 oversold):
                     allowed_actions = "BUY/HOLD"
 
                 sf = PromptBuilder.safe_format
+                na = PromptBuilder.na
                 ind = indicators
                 macd_state = "above-signal" if ind.get('macd_above_signal') else "below-signal"
                 cross = ind.get('macd_cross')
                 cross_lbl = "bull-cross" if cross == 1 else ("bear-cross" if cross == -1 else "no-cross")
                 sector = sector_map.get(symbol, "")
-                pos_line = ""
+
+                # Memory lines: a held position carries its thesis (manage against it); a
+                # watch candidate carries WHY it was flagged; both carry the recent trail.
+                mem_line = ""
                 if is_owned and symbol in positions:
                     p = positions[symbol]
                     held = _held_days(p.get('entry_time'), context.get('timestamp'))
-                    pos_line = (f"\n• Position: entry ₹{sf(p.get('entry_price'))}, "
-                                f"P&L {sf(p.get('pnl_percent'), 0, 1)}%"
-                                + (f", held {held}d" if held is not None else ""))
+                    mem_line += (f"\n• Position: avg ₹{sf(p.get('entry_price'))}, "
+                                 f"P&L {sf(p.get('pnl_percent'), 0, 1)}%"
+                                 + (f", held {held}d" if held is not None else ""))
+                    et = p.get('entry_thesis')
+                    if et:
+                        mem_line += f"\n• Your thesis ({p.get('thesis_status') or 'intact'}): {str(et)[:160]}"
+                elif is_watchlist:
+                    intent = (watchlist_thesis.get(symbol) or {}).get('reason')
+                    if intent:
+                        mem_line += f"\n• You're watching this because: {str(intent)[:160]}"
+                trail = decision_trail.get(symbol)
+                if trail:
+                    recent = "; ".join(f"{t.get('signal')}@{t.get('confidence')}" for t in trail[:3])
+                    mem_line += f"\n• Recent calls: {recent}"
 
                 prompt += f"""
 --- {symbol} {category}{f' [{sector}]' if sector else ''} ---
-• Price ₹{current_price:.2f} | Allowed: {allowed_actions}{pos_line}
-• Trend: vs SMA20 {sf(ind.get('price_vs_sma20_pct'), 0, 1)}% / vs SMA50 {sf(ind.get('price_vs_sma50_pct'), 0, 1)}% | 5-Day {price_change_5d:.2f}%
+• Price ₹{current_price:.2f} | Allowed: {allowed_actions}{mem_line}
+• Trend: vs SMA20 {na(ind.get('price_vs_sma20_pct'))}% / vs SMA50 {na(ind.get('price_vs_sma50_pct'))}% | 5-Day {price_change_5d:.2f}%
 • Momentum: RSI {sf(ind.get('rsi_14'), 50, 1)} (Δ3 {sf(ind.get('rsi_trajectory'), 0, 1)}) | MACD {macd_state}/{cross_lbl} | Stoch%K {sf(ind.get('stoch_k'), 50, 0)} | ROC10 {sf(ind.get('roc_10'), 0, 1)}%
 • Volatility: ATR {sf(ind.get('atr_14'))} | Boll%B {sf(ind.get('bollinger_pct_b'), 0, 2)} (BW {sf(ind.get('bollinger_bandwidth'), 0, 1)}%) | Range-pos {sf(ind.get('range_position'), 0, 2)}
 • Volume: {volume_ratio:.2f}x avg | OBV-trend {sf(ind.get('obv_trend'), 0, 2)} | vol-trend {sf(ind.get('volume_trend'), 1, 2)}
 """
 
         prompt += f"""
-HOW TO DECIDE (per stock):
+HOW TO DECIDE (per stock) — reasoning first, then the call:
 - Weigh trend + momentum + volume together; favor confluence over any single indicator. Keep portfolio diversification and the market regime above in mind.
-- Calibrate confidence: 0.5 = unclear, 0.6–0.7 = decent confluence, 0.8+ = strong setup. Only BUY/SELL above 0.6; otherwise HOLD.
-- alert_conditions = absolute levels you want to be woken on (price_above / price_below / rsi_below / volume_spike). Set them for OWNED and WATCH stocks.
+- For OWNED stocks, judge them against the thesis shown above: is it intact, weakening, or invalidated? Then HOLD / ADD / TRIM / MOVE_STOP / SELL accordingly. For WATCH/NEW, BUY or HOLD.
+- Confidence GATES and SIZES (see ACTION RULES): only BUY/ADD at/above {floor:.2f}; a higher number means a bigger position.
+- alert_conditions = absolute levels to be woken on (price_above / price_below / rsi_below / volume_spike). Set them for OWNED and WATCH stocks.
 - emergency_thresholds = percentages for OWNED stocks: stop_loss_pct (negative, e.g. {EMERGENCY_STOP_LOSS_PCT}), take_profit_pct (positive, e.g. {EMERGENCY_TAKE_PROFIT_PCT}), recheck_trigger_pct (move either way, e.g. {EMERGENCY_RECHECK_PCT}).
 - Leave stop_loss and target null — the system applies ATR-based levels.
 
 Respond with ONLY this JSON object (one entry per symbol), no other text:
 {{
     "market_analysis": "2-3 sentences: regime, portfolio posture, any cross-stock theme",
-    "watchlist": ["symbols you want tracked"],
     "decisions": {{"""
 
-        # Add expected decision format - show one example, apply to all symbols
+        # One worked example, applied to every symbol. The first symbol is a real one
+        # from THIS universe (so the model sees the exact key shape); the WATCH example
+        # uses a placeholder, never a real ticker, so it can't contaminate a real call.
         first_symbol = symbols_list[0]
         remaining_symbols = symbols_list[1:] if len(symbols_list) > 1 else []
 
         prompt += f"""
         "{first_symbol}": {{
-            "signal": "BUY | SELL | HOLD",
+            "reasoning": "1-2 sentences for {first_symbol} — what the indicators say",
+            "signal": "BUY | SELL | HOLD | TRIM | ADD | MOVE_STOP",
             "confidence": 0.0-1.0,
-            "reasoning": "1-2 sentences for {first_symbol}",
+            "thesis": "OWNED only: your updated one-line view (else null)",
+            "thesis_status": "OWNED only: intact | weakening | invalidated (else null)",
+            "trim_fraction": null,
+            "new_stop": null,
             "watchlist": false,
             "watchlist_reason": null,
+            "alert_conditions": null,
             "entry_price": null,
             "stop_loss": null,
             "target": null,
-            "emergency_thresholds": {{"stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT}, "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT}, "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}}},
-            "alert_conditions": null
+            "emergency_thresholds": {{"stop_loss_pct": {EMERGENCY_STOP_LOSS_PCT}, "take_profit_pct": {EMERGENCY_TAKE_PROFIT_PCT}, "recheck_trigger_pct": {EMERGENCY_RECHECK_PCT}}}
         }}"""
 
         if remaining_symbols:
             prompt += f""",
         ... same shape for every other symbol: {', '.join(remaining_symbols)}
 
-        Example of a [WATCH] stock (flag it, set the levels that would make you act):
-        "TCS": {{
+        Example of a [WATCH] entry (placeholder key — flag it + set the levels that would make you act):
+        "<A_WATCH_SYMBOL>": {{
+            "reasoning": "Constructive but no entry yet",
             "signal": "HOLD",
             "confidence": 0.6,
-            "reasoning": "Constructive but no entry yet",
+            "thesis": null,
+            "thesis_status": null,
+            "trim_fraction": null,
+            "new_stop": null,
             "watchlist": true,
-            "watchlist_reason": "Want a pullback to ~3150 or oversold RSI",
+            "watchlist_reason": "Want a pullback to support or oversold RSI",
+            "alert_conditions": {{"price_below": 3150, "rsi_below": 30, "volume_spike": 2.0}},
             "entry_price": null,
             "stop_loss": null,
             "target": null,
-            "emergency_thresholds": null,
-            "alert_conditions": {{"price_below": 3150, "rsi_below": 30, "volume_spike": 2.0}}
+            "emergency_thresholds": null
         }}"""
 
         prompt += """
     }
 }
 
-Set entry_price to the current price for BUY/SELL, null for HOLD; stop_loss and target stay null (ATR handles them). OWNED stocks must include emergency_thresholds; WATCH stocks must set watchlist:true plus alert_conditions."""
+Set entry_price to the current price for BUY/ADD, null otherwise; stop_loss and target stay null (ATR handles them). TRIM needs trim_fraction (0..1); MOVE_STOP needs new_stop (below price, tighter than the current stop). OWNED stocks must include emergency_thresholds and a thesis_status; WATCH stocks must set watchlist:true plus alert_conditions."""
 
+        return prompt
+
+    @staticmethod
+    def create_alert_review_prompt(portfolio_data: Dict[str, pd.DataFrame],
+                                   portfolio_indicators: Dict[str, Dict[str, float]],
+                                   owned_symbols, candidate_symbols,
+                                   context: Dict[str, Any] = None) -> str:
+        """Consolidated MID-CYCLE review (one prompt, replaces per-symbol special passes):
+        recheck open positions (manage against thesis) + consider surfaced candidates
+        (skeptically). Two framed sections, reasoning-first; same per-symbol action
+        contract the portfolio parser reads."""
+        if context is None:
+            context = {}
+        sf = PromptBuilder.safe_format
+        na = PromptBuilder.na
+        positions = context.get('positions', {})
+        alert_ctx = context.get('alert_context', {})
+        available_capital = context.get('account_info', {}).get('available_capital', INITIAL_CAPITAL)
+        floor = MIN_ACT_CONFIDENCE
+
+        def block(symbol: str, tag: str, allowed: str, extra: str) -> str:
+            ind = portfolio_indicators.get(symbol, {})
+            try:
+                price = float(portfolio_data[symbol]['close'].iloc[-1])
+            except Exception:
+                price = 0.0
+            macd_state = "above-signal" if ind.get('macd_above_signal') else "below-signal"
+            return (f"\n--- {symbol} {tag} ---\n"
+                    f"• Price ₹{price:.2f} | Allowed: {allowed}{extra}\n"
+                    f"• Trend: vs SMA20 {na(ind.get('price_vs_sma20_pct'))}% / vs SMA50 {na(ind.get('price_vs_sma50_pct'))}%\n"
+                    f"• Momentum: RSI {sf(ind.get('rsi_14'), 50, 1)} | MACD {macd_state} | Stoch%K {sf(ind.get('stoch_k'), 50, 0)}\n"
+                    f"• Volatility: ATR {sf(ind.get('atr_14'))} | Boll%B {sf(ind.get('bollinger_pct_b'), 0, 2)}\n")
+
+        prompt = f"""You are a disciplined swing trader for NSE (Indian) equities, holding 2-5 days.
+This is a MID-CYCLE review between full portfolio reviews. Two jobs, reasoning first:
+  1. RECHECK each open position — has anything unexpected happened that needs adjusting?
+  2. CONSIDER the flagged candidates — skeptically.
+
+ACCOUNT:
+- Available capital ₹{available_capital:.2f} | {context.get('timestamp', 'Current')}
+- Market regime: {_regime_line(portfolio_indicators)}
+"""
+
+        if owned_symbols:
+            prompt += "\nYOUR OPEN POSITIONS — recheck + manage each against its thesis:\n"
+            for s in owned_symbols:
+                p = positions.get(s, {})
+                pos_line = (f"\n• Holding: qty {p.get('quantity')} @ avg ₹{sf(p.get('entry_price'))} | "
+                            f"P&L {sf(p.get('pnl_percent'), 0, 1)}% | stop ₹{sf(p.get('stop_loss'))} target ₹{sf(p.get('target'))}")
+                et = p.get('entry_thesis')
+                if et:
+                    pos_line += f"\n• Your thesis ({p.get('thesis_status') or 'intact'}): {str(et)[:160]}"
+                prompt += block(s, "[OWNED]", "HOLD/SELL/TRIM/ADD/MOVE_STOP", pos_line)
+            prompt += ("\nMANAGING RULE: a profitable position with an INTACT thesis → MOVE_STOP (lock gains), "
+                       "TRIM, or HOLD — NEVER a reflexive SELL. SELL only when the thesis is INVALIDATED.\n")
+
+        if candidate_symbols:
+            prompt += "\nFLAGGED FOR CONSIDERATION (a pullback signal tripped — MIGHT be interesting, not a buy order):\n"
+            for s in candidate_symbols:
+                fired = alert_ctx.get(s) or []
+                conds = ", ".join(str(a.get('condition', '')).replace('_', ' ') for a in fired if a.get('condition'))
+                why = f"\n• Why flagged: {conds}" if conds else ""
+                prompt += block(s, "[WATCH]", "BUY/HOLD", why)
+            prompt += ("\nCONSIDERATION RULE: a single signal is NOT a reason to buy. Default HOLD unless there is real "
+                       "confluence (trend + momentum + volume) AND the regime supports new longs.\n")
+
+        prompt += f"""
+Confidence GATES and SIZES: only BUY/ADD at/above {floor:.2f}; a higher number takes a bigger position. Leave stop_loss/target null (ATR sets them).
+
+Respond with ONLY this JSON object (one entry per symbol above), reasoning first:
+{{
+    "market_analysis": "1-2 sentences: what changed since the last full review",
+    "decisions": {{
+        "<SYMBOL>": {{
+            "reasoning": "what the data says; for a holding, is the thesis intact/weakening/invalidated",
+            "signal": "OWNED: HOLD|SELL|TRIM|ADD|MOVE_STOP  /  CANDIDATE: BUY|HOLD",
+            "confidence": 0.0-1.0,
+            "thesis": "owned only: updated one-line view (else null)",
+            "thesis_status": "owned only: intact|weakening|invalidated (else null)",
+            "trim_fraction": null,
+            "new_stop": null,
+            "entry_price": null, "stop_loss": null, "target": null,
+            "emergency_thresholds": null
+        }}
+        ... one entry for EVERY symbol listed above
+    }}
+}}
+Rules: SELL/TRIM/ADD/MOVE_STOP only on OWNED; BUY only on a candidate. TRIM needs trim_fraction (0..1); MOVE_STOP needs new_stop (below current price, tighter than the current stop). entry_price = current price for BUY/ADD, else null."""
         return prompt
 
     @staticmethod
@@ -469,18 +454,22 @@ Set entry_price to the current price for BUY/SELL, null for HOLD; stop_loss and 
                     except (KeyError, IndexError, ValueError):
                         current_price = 100.0
 
-                    # Validate and clean decision
-                    signal = decision_data.get('signal', 'HOLD').upper()
-                    if signal not in ['BUY', 'SELL', 'HOLD']:
+                    # Validate and clean decision — full verb vocabulary now allowed.
+                    signal = str(decision_data.get('signal', 'HOLD')).upper()
+                    if signal not in VALID_SIGNALS:
                         signal = 'HOLD'
 
-                    confidence = float(decision_data.get('confidence', 0.5))
-                    confidence = max(0.0, min(1.0, confidence))
+                    confidence = max(0.0, min(1.0, _coerce_float(decision_data.get('confidence'), 0.5)))
 
                     reasoning = decision_data.get('reasoning', f'Analysis for {symbol}')
                     entry_price = decision_data.get('entry_price', current_price if signal != 'HOLD' else None)
                     stop_loss = decision_data.get('stop_loss')
                     target = decision_data.get('target')
+                    # Evolving thesis (OWNED) + verb parameters (TRIM / MOVE_STOP).
+                    thesis = decision_data.get('thesis')
+                    thesis_status = decision_data.get('thesis_status')
+                    trim_fraction = _coerce_float(decision_data.get('trim_fraction'))
+                    new_stop = _coerce_float(decision_data.get('new_stop'))
 
                     # Extract and process emergency thresholds using simplified logic
                     emergency_thresholds = decision_data.get('emergency_thresholds', {})
@@ -507,6 +496,10 @@ Set entry_price to the current price for BUY/SELL, null for HOLD; stop_loss and 
                         'signal': signal,
                         'confidence': confidence,
                         'reasoning': reasoning,
+                        'thesis': thesis,
+                        'thesis_status': thesis_status,
+                        'trim_fraction': trim_fraction,
+                        'new_stop': new_stop,
                         'watchlist': watchlist_flag,
                         'watchlist_reason': watchlist_reason,
                         'alert_conditions': alert_conditions,
@@ -527,6 +520,10 @@ Set entry_price to the current price for BUY/SELL, null for HOLD; stop_loss and 
                         'signal': 'HOLD',
                         'confidence': 0.3,
                         'reasoning': f'No analysis provided for {symbol}',
+                        'thesis': None,
+                        'thesis_status': None,
+                        'trim_fraction': None,
+                        'new_stop': None,
                         'watchlist': False,
                         'watchlist_reason': None,
                         'alert_conditions': None,

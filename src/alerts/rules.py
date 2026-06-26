@@ -5,7 +5,70 @@ from src.alerts.engine import AlertRule, AlertType
 from src.platform.config import (
     RSI_OVERBOUGHT, RSI_OVERSOLD, VOLUME_SMA_PERIOD, VOLUME_SPIKE_MULTIPLIER,
     MACD_CROSS_MIN_GAP_PCT, MACD_CROSS_COOLDOWN_MIN,
+    RSI_PULLBACK_MAX, SUPPORT_BAND_PCT,
 )
+
+
+# ---- candidate SURFACING rules (mean-reversion in an uptrend) ----------------------
+# These look for DIPS worth a closer look in STRONG names — not momentum breakouts. They
+# are stateless predicates (no cross-detection): they fire whenever the condition currently
+# holds, so a name keeps surfacing for consideration while it stays interesting. cooldown 0
+# (the alert layer re-evaluates each tick; the consolidated review decides whether to act).
+
+class OversoldPullbackRule(AlertRule):
+    """Surface a dip in an uptrend: RSI <= pullback threshold WHILE price is above SMA50.
+
+    The uptrend filter (price > SMA50) is what separates 'buy the dip in a strong name'
+    from 'catch a falling knife' — oversold alone, in a downtrend, is not interesting."""
+
+    def __init__(self, symbol: str, rsi_max: float = RSI_PULLBACK_MAX):
+        super().__init__(name=f"{symbol}_oversold_pullback",
+                         alert_type=AlertType.RSI_EXTREME, condition="oversold_pullback",
+                         threshold=rsi_max, priority=2, cooldown_minutes=0)
+        self.symbol = symbol
+        self.rsi_max = rsi_max
+
+    def check(self, market_data: Dict[str, Any]) -> bool:
+        if market_data.get('symbol') != self.symbol:
+            return False
+        ind = market_data.get('indicators', {})
+        rsi = ind.get('rsi_14')
+        sma50 = ind.get('sma_50')
+        price = market_data.get('close', 0)
+        if rsi is None or sma50 is None or not price:
+            return False
+        return rsi <= self.rsi_max and price > sma50
+
+    def get_current_value(self, market_data: Dict[str, Any]) -> float:
+        return market_data.get('indicators', {}).get('rsi_14', 50)
+
+
+class SupportPullbackRule(AlertRule):
+    """Surface a pullback to moving-average support: price has come back to within
+    SUPPORT_BAND_PCT of SMA20 or SMA50 FROM ABOVE (was trading above it) — a trend-pullback
+    entry zone, not a breakdown."""
+
+    def __init__(self, symbol: str, band_pct: float = SUPPORT_BAND_PCT):
+        super().__init__(name=f"{symbol}_support_pullback",
+                         alert_type=AlertType.PRICE_CROSS, condition="support_pullback",
+                         threshold=band_pct, priority=2, cooldown_minutes=0)
+        self.symbol = symbol
+        self.band = band_pct / 100.0
+
+    def check(self, market_data: Dict[str, Any]) -> bool:
+        if market_data.get('symbol') != self.symbol:
+            return False
+        ind = market_data.get('indicators', {})
+        price = market_data.get('close', 0)
+        if not price:
+            return False
+        for ma in (ind.get('sma_20'), ind.get('sma_50')):
+            if ma and price >= ma and (price - ma) / ma <= self.band:
+                return True  # at-or-just-above a rising MA = support test
+        return False
+
+    def get_current_value(self, market_data: Dict[str, Any]) -> float:
+        return market_data.get('close', 0)
 
 
 class PriceCrossRule(AlertRule):

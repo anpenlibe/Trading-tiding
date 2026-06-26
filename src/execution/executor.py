@@ -19,6 +19,7 @@ from src.platform.types import BaseTradingExecutor
 from src.platform.config import (
     INITIAL_CAPITAL, PAPER_TRADE_COMMISSION, PAPER_TRADE_SLIPPAGE, TRADING_PRODUCT,
     EMERGENCY_STOP_LOSS_PCT, EMERGENCY_TAKE_PROFIT_PCT, EMERGENCY_RECHECK_PCT,
+    MIN_TRADE_VALUE,
 )
 from src.execution.costs import compute_charges
 from src.portfolio.book import Portfolio, PaperTrade
@@ -61,9 +62,20 @@ class PaperTrader(BaseTradingExecutor):
             if action == 'HOLD':
                 return {"status": "SKIPPED", "reason": "HOLD signal - no action taken"}
 
-            # Execution price with slippage
+            # MOVE_STOP touches no price/fill — it only mutates the stop level.
+            if action == 'MOVE_STOP':
+                return self._execute_move_stop(symbol, signal, current_price)
+
+            # Execution price with slippage: buy-side (pay up) for BUY/ADD, sell-side
+            # (receive less) for SELL/TRIM.
+            buy_side = action in ('BUY', 'ADD')
             slippage_amount = current_price * PAPER_TRADE_SLIPPAGE
-            execution_price = current_price + slippage_amount if action == 'BUY' else current_price - slippage_amount
+            execution_price = current_price + slippage_amount if buy_side else current_price - slippage_amount
+
+            if action == 'ADD':
+                return self._execute_add(symbol, signal, execution_price)
+            if action == 'TRIM':
+                return self._execute_trim(symbol, signal, execution_price)
 
             quantity = signal.get('position_size', 1)
             stop_loss = signal.get('stop_loss')
@@ -84,6 +96,8 @@ class PaperTrader(BaseTradingExecutor):
                 return self._execute_buy(symbol, quantity, execution_price, stop_loss, target, signal)
             elif action == 'SELL':
                 return self._execute_sell(symbol, quantity, execution_price, signal)
+
+            return {"status": "REJECTED", "reason": f"Unknown signal '{action}'"}
 
         except Exception as e:
             logger.error(f"Error executing trade: {e}")
@@ -147,6 +161,12 @@ class PaperTrader(BaseTradingExecutor):
             status="OPEN",
             unrealized_pnl=0.0,
             pnl_percent=0.0,
+            total_buy_quantity=quantity,
+            # Seed thesis memory from the decision's reasoning (the field the model
+            # emits today); the prompt rewrite later supplies structured thesis fields.
+            entry_thesis=signal.get('entry_thesis') or signal.get('reasoning', ''),
+            thesis=signal.get('thesis') or signal.get('reasoning', ''),
+            thesis_status=signal.get('thesis_status', 'intact'),
         )
 
         self.book.open(trade, total_cost)
@@ -196,6 +216,118 @@ class PaperTrader(BaseTradingExecutor):
             "symbol": symbol, "quantity": quantity, "price": price,
             "commission": commission,
             "realized_pnl": result['realized_pnl'], "pnl_percent": result['pnl_percent'],
+        }
+
+    def _execute_add(self, symbol: str, signal: Dict[str, Any], price: float) -> Dict[str, Any]:
+        """Scale into an existing position (ADD). The increment was sized by the risk
+        manager (aggregate-capped) and stamped onto ``position_size``; re-average + debit."""
+        if symbol not in self.book.open_positions:
+            return {"status": "REJECTED", "reason": "No open position to ADD to"}
+
+        add_qty = signal.get('position_size', 0) or 0
+        if add_qty <= 0:
+            return {"status": "REJECTED", "reason": "ADD requires a positive sized increment"}
+
+        position_value = add_qty * price
+        commission = compute_charges(position_value, "BUY", TRADING_PRODUCT) + PAPER_TRADE_COMMISSION
+        total_cost = position_value + commission
+        if total_cost > self.book.available_capital:
+            return {"status": "REJECTED",
+                    "reason": f"Insufficient capital for ADD. Need ₹{total_cost:.2f}, have ₹{self.book.available_capital:.2f}"}
+
+        self.book.add_to_position(symbol, add_qty, price, commission, total_cost)
+        # Scaling in is a fresh expression of conviction — evolve the thesis to match.
+        new_thesis = signal.get('thesis') or signal.get('reasoning')
+        if new_thesis or signal.get('thesis_status'):
+            self.book.update_thesis(symbol, thesis=new_thesis, status=signal.get('thesis_status'))
+        pos = self.book.open_positions[symbol]
+        logger.info(f"ADD executed: {symbol} x{add_qty} @ ₹{price:.2f} "
+                    f"(now {pos.quantity} @ avg ₹{pos.entry_price:.2f})")
+        log_event('fill', action='ADD', symbol=symbol, quantity=add_qty,
+                  price=round(price, 2), value=round(position_value, 2),
+                  commission=round(commission, 2), new_quantity=pos.quantity,
+                  new_avg_price=round(pos.entry_price, 2))
+        return {
+            "status": "EXECUTED", "trade_id": pos.trade_id, "action": "ADD",
+            "symbol": symbol, "quantity": add_qty, "price": price, "commission": commission,
+            "new_quantity": pos.quantity, "new_avg_price": pos.entry_price,
+        }
+
+    def _execute_trim(self, symbol: str, signal: Dict[str, Any], price: float) -> Dict[str, Any]:
+        """Partial exit (TRIM): realize ``trim_fraction`` of the holding against average
+        cost, keep the remainder open. Escalates to a full SELL if the trim would take
+        everything or leave a sub-MIN_TRADE_VALUE remnant (uneconomic to exit later)."""
+        if symbol not in self.book.open_positions:
+            return {"status": "REJECTED", "reason": "No open position to TRIM"}
+
+        position = self.book.open_positions[symbol]
+        try:
+            frac = float(signal.get('trim_fraction', 0.5))
+        except (TypeError, ValueError):
+            frac = 0.5
+        frac = max(0.0, min(1.0, frac))
+        trim_qty = int(position.quantity * frac)
+        if trim_qty <= 0:
+            return {"status": "REJECTED",
+                    "reason": f"Trim fraction {frac:.2f} too small for {position.quantity} shares"}
+
+        remainder_value = (position.quantity - trim_qty) * position.entry_price
+        if trim_qty >= position.quantity or remainder_value < MIN_TRADE_VALUE:
+            # Don't leave an unsellable remnant — exit in full instead.
+            return self._execute_sell(symbol, position.quantity, price,
+                                      {"exit_reason": signal.get('exit_reason', 'TRIM_FULL')})
+
+        gross_proceeds = trim_qty * price
+        commission = compute_charges(gross_proceeds, "SELL", TRADING_PRODUCT) + PAPER_TRADE_COMMISSION
+        net_proceeds = gross_proceeds - commission
+        result = self.book.close(symbol, price, net_proceeds, commission,
+                                 exit_reason='TRIM', quantity=trim_qty)
+
+        logger.info(f"TRIM executed: {symbol} x{trim_qty} @ ₹{price:.2f} "
+                    f"P&L: ₹{result['realized_pnl']:.2f}; {result['remaining_quantity']} left")
+        log_event('fill', action='TRIM', symbol=symbol, quantity=trim_qty,
+                  price=round(price, 2), pnl=round(result['realized_pnl'], 2),
+                  pnl_pct=round(result['pnl_percent'], 2),
+                  remaining_quantity=result['remaining_quantity'], reason='TRIM')
+        return {
+            "status": "EXECUTED", "trade_id": position.trade_id, "action": "TRIM",
+            "symbol": symbol, "quantity": trim_qty, "price": price, "commission": commission,
+            "realized_pnl": result['realized_pnl'], "pnl_percent": result['pnl_percent'],
+            "remaining_quantity": result['remaining_quantity'],
+        }
+
+    def _execute_move_stop(self, symbol: str, signal: Dict[str, Any],
+                           current_price: float) -> Dict[str, Any]:
+        """Tighten-only stop move. Rejects a loosening move and any stop at/above market
+        (a stop >= price is a disguised market exit — the next floor pass would close it
+        at the stop, a worse fill than a clean SELL). No cash/fill."""
+        if symbol not in self.book.open_positions:
+            return {"status": "REJECTED", "reason": "No open position to MOVE_STOP"}
+
+        new_stop = signal.get('new_stop')
+        if new_stop is None:
+            return {"status": "REJECTED", "reason": "MOVE_STOP requires 'new_stop'"}
+        try:
+            new_stop = float(new_stop)
+        except (TypeError, ValueError):
+            return {"status": "REJECTED", "reason": "new_stop is not numeric"}
+
+        old_stop = self.book.open_positions[symbol].stop_loss
+        if new_stop >= current_price:
+            return {"status": "REJECTED",
+                    "reason": f"new_stop ₹{new_stop:.2f} >= price ₹{current_price:.2f} (would insta-trigger)"}
+        if old_stop is not None and new_stop <= old_stop:
+            return {"status": "REJECTED",
+                    "reason": f"new_stop ₹{new_stop:.2f} does not tighten (current ₹{old_stop:.2f})"}
+
+        self.book.set_stop(symbol, new_stop)
+        logger.info(f"MOVE_STOP: {symbol} stop {old_stop} -> ₹{new_stop:.2f}")
+        log_event('management', action='MOVE_STOP', symbol=symbol,
+                  old_stop=round(old_stop, 2) if old_stop is not None else None,
+                  new_stop=round(new_stop, 2))
+        return {
+            "status": "EXECUTED", "action": "MOVE_STOP", "symbol": symbol,
+            "old_stop": old_stop, "new_stop": new_stop,
         }
 
     def update_positions(self, current_prices: Dict[str, float]) -> list:
@@ -255,6 +387,12 @@ class PaperTrader(BaseTradingExecutor):
             return {"valid": False, "reason": f"Validation error: {str(e)}"}
 
     # ----- read APIs delegate to the portfolio book -----
+
+    def update_thesis(self, symbol: str, thesis: Optional[str] = None,
+                      status: Optional[str] = None):
+        """Persist an evolving thesis/status onto a held position (e.g. a HOLD that
+        reports the thesis is now 'weakening'). Delegates to the book."""
+        self.book.update_thesis(symbol, thesis=thesis, status=status)
 
     def get_positions(self) -> Dict[str, Any]:
         return self.book.get_positions()

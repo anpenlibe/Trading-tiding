@@ -27,8 +27,9 @@ from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.platform.config import SYMBOLS, INITIAL_CAPITAL, is_market_hours
-from src.platform.logger import setup_logger
+import json
+from src.platform.config import SYMBOLS, INITIAL_CAPITAL, is_market_hours, WATCHLIST_STATE_FILE
+from src.platform.logger import setup_logger, LOGS_DIR
 from src.marketdata.feed import LiveSource, Feed
 from src.marketdata.collector import DataCollector
 from src.marketdata.backfill import ensure_recent_history
@@ -126,11 +127,44 @@ class LiveTrader:
             'current_positions': [s for s, p in positions.items() if p.get('quantity', 0) > 0],
             'positions': positions,
             'account_info': self.trader.get_account_info(),
+            # Memory from the PREVIOUS pass (alert_manager state pre-update): repairs the
+            # dead context['watchlist'] seam + carries watch intent and the decision trail.
+            'watchlist': self.alerts.get_watchlist_symbols(),
+            'watchlist_thesis': self.alerts.get_watchlist_intent(),
+            'decision_trail': self.brain.recent_decisions_by_symbol(3),
         }
         result = self.pipeline.run_decisions(pdata, pind, prices, context)
         self.alerts.update_from_general(result['decisions'], positions)
+        # Persist the standing watchlist intent so a live restart doesn't forget it.
+        self._save_watchlist_state()
         logger.info(f"General pass: {len(result['decisions'])} decisions, "
                     f"{len(result['executed'])} executed. {result['market_analysis'][:120]}")
+
+    # ----- watchlist intent persistence (survives a live restart) -------------------
+
+    def _watchlist_state_path(self):
+        return os.path.join(LOGS_DIR, WATCHLIST_STATE_FILE)
+
+    def _save_watchlist_state(self):
+        """Persist the standing watchlist intent after a general pass."""
+        try:
+            with open(self._watchlist_state_path(), 'w') as f:
+                json.dump(self.alerts.get_watchlist_intent(), f, default=str)
+        except Exception as e:
+            logger.debug(f"Could not save watchlist state: {e}")
+
+    def _load_watchlist_state(self):
+        """Restore watchlist intent at startup so a restart resumes its watchlist."""
+        try:
+            path = self._watchlist_state_path()
+            if not os.path.exists(path):
+                return
+            with open(path) as f:
+                intent = json.load(f)
+            self.alerts.seed_watchlist_intent(intent, self.trader.get_positions())
+            logger.info(f"Restored watchlist intent: {sorted(intent)}")
+        except Exception as e:
+            logger.debug(f"Could not load watchlist state: {e}")
 
     def _alert_pass(self):
         pdata, pind, prices, snaps = self._gather()
@@ -139,25 +173,31 @@ class LiveTrader:
         log_event('tick', sim_time=datetime.now().isoformat(timespec='seconds'),
                   symbols=len(pdata), pass_type='alert')
         triggered = self.alerts.evaluate(snaps)
-        if not triggered:
-            logger.info("Alert check: no triggers")
+        positions = self.trader.get_positions()
+        owned = [s for s in positions if positions[s].get('quantity', 0) > 0 and s in pdata]
+        candidates = [s for s in triggered if s in pdata and s not in owned]
+        if not owned and not candidates:
+            logger.info("Alert check: nothing to review")
             return
-        logger.info(f"Alert check: triggered {list(triggered)}")
-        for symbol in triggered:
-            if symbol not in pdata:
-                continue
-            try:
-                out = self.pipeline.run_special(symbol, pdata[symbol], pind[symbol], prices[symbol],
-                                                alert_context=triggered[symbol])
-                d = out['decision']
-                ex = out.get('executed')
-                logger.info(f"Special pass {symbol}: {d.get('signal')} (conf {d.get('confidence')})"
-                            + (f" -> {ex.get('status')}" if ex else ""))
-                if ex and ex.get('status') == 'EXECUTED':
-                    # Book changed → re-derive this symbol's management alert levels.
-                    self.alerts.refresh(self.trader.get_positions())
-            except Exception as e:
-                logger.error(f"Special pass error for {symbol}: {e}")
+        review = owned + candidates
+        context = {
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'positions': positions,
+            'current_positions': owned,
+            'account_info': self.trader.get_account_info(),
+            'alert_context': triggered,
+        }
+        try:
+            out = self.pipeline.run_alert_review(
+                {s: pdata[s] for s in review}, {s: pind[s] for s in review},
+                {s: prices[s] for s in review if s in prices},
+                context, owned, candidates, regime_indicators=pind)
+            logger.info(f"Alert review: {len(review)} symbols ({len(owned)} held + "
+                        f"{len(candidates)} candidates), {len(out['executed'])} executed")
+            if out['executed']:
+                self.alerts.refresh(self.trader.get_positions())
+        except Exception as e:
+            logger.error(f"Alert review error: {e}")
 
     # ----- the wall-clock loop ------------------------------------------------------
 
@@ -181,6 +221,9 @@ class LiveTrader:
             logger.info(f"--- BACKFILL: ensuring ~{self.backfill_days}d of history ---")
             ensure_recent_history(self.symbols, lookback_days=self.backfill_days,
                                   zerodha=self.source.api, db=self.collector.db)
+
+        # Resume the standing watchlist from a prior session, if any.
+        self._load_watchlist_state()
 
         last_general = 0.0
         try:
